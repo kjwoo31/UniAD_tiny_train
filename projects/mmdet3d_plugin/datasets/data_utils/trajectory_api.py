@@ -2,7 +2,9 @@ import numpy as np
 from nuscenes.prediction import (PredictHelper,
                                  convert_local_coords_to_global,
                                  convert_global_coords_to_local)
-from mmdet3d.core.bbox import Box3DMode, Coord3DMode, LiDARInstance3DBoxes
+import sys
+sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+from third_party.uniad_mmdet3d.core.bbox import Box3DMode, Coord3DMode, LiDARInstance3DBoxes
 from nuscenes.eval.common.utils import quaternion_yaw, Quaternion
 from mmcv.parallel import DataContainer as DC
 from mmdet.datasets.pipelines import to_tensor
@@ -148,8 +150,7 @@ class NuScenesTraj(object):
 
     def generate_sdc_info(self, sdc_vel, as_lidar_instance3d_box=False):
         # sdc dim from https://forum.nuscenes.org/t/dimensions-of-the-ego-vehicle-used-to-gather-data/550
-        # TODO(box3d): we have changed yaw to mmdet3d 1.0.0rc6 format, wlh->lwh -pi->0.5pi
-        psudo_sdc_bbox = np.array([0.0, 0.0, 0.0, 4.08, 1.73, 1.56, 0.5*np.pi])
+        psudo_sdc_bbox = np.array([0.0, 0.0, 0.0, 1.73, 4.08, 1.56, -np.pi])
         if self.with_velocity:
             psudo_sdc_bbox = np.concatenate([psudo_sdc_bbox, sdc_vel], axis=-1)
         gt_bboxes_3d = np.array([psudo_sdc_bbox]).astype(np.float32)

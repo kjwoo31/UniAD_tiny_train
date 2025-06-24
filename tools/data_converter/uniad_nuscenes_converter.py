@@ -10,8 +10,10 @@ from pyquaternion import Quaternion
 from shapely.geometry import MultiPoint, box
 from typing import List, Tuple, Union
 
-from mmdet3d.core.bbox.box_np_ops import points_cam2img
-from mmdet3d.datasets import NuScenesDataset
+import sys
+sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+from third_party.uniad_mmdet3d.core.bbox import points_cam2img
+from third_party.uniad_mmdet3d.datasets import NuScenesDataset
 
 nus_categories = ('car', 'truck', 'trailer', 'bus', 'construction_vehicle',
                   'bicycle', 'motorcycle', 'pedestrian', 'traffic_cone',
@@ -335,9 +337,8 @@ def _fill_trainval_infos(nusc,
                     names[i] = NuScenesDataset.NameMapping[names[i]]
             names = np.array(names)
             # instance_inds = [nusc.getind('instance', ann['instance_token']) for ann in annotations]
-            # TODO(box3d): convert gt_boxes to mmdet3d 1.0.0rc6 LiDARInstance3DBoxes format. [DONE]
-            gt_boxes = np.concatenate([locs, dims, rots], axis=1)
-            # gt_boxes = np.concatenate([locs, dims[:, [1, 0, 2]], rots], axis=1)
+            # we need to convert rot to SECOND format.
+            gt_boxes = np.concatenate([locs, dims, -rots - np.pi / 2], axis=1)
             assert len(gt_boxes) == len(
                 annotations), f'{len(gt_boxes)}, {len(annotations)}'
             info['gt_boxes'] = gt_boxes

@@ -12,7 +12,7 @@ import math
 
 from mmdet.models import LOSSES
 
-@LOSSES.register_module()
+@LOSSES.register_module(force=True)
 class MTPLoss(nn.Module):
     """
     MTP loss modified to include variances. Uses MSE for mode selection.

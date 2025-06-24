@@ -14,7 +14,7 @@ from mmdet.models.dense_heads.anchor_free_head import AnchorFreeHead
 from mmdet.models.builder import HEADS, build_loss
 
 
-@HEADS.register_module()
+@HEADS.register_module(force=True)
 class SegDETRHead(
         AnchorFreeHead
 ):  # I modify DETRHead to make it to support panoptic segmentation

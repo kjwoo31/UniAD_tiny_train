@@ -11,7 +11,7 @@ import random
 from IPython import embed
 
 
-@SAMPLER.register_module()
+@SAMPLER.register_module(force=True)
 class DistributedGroupSampler(Sampler):
     """Sampler that restricts data loading to a subset of the dataset.
     It is especially useful in conjunction with

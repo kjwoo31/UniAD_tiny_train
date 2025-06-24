@@ -11,7 +11,7 @@ from einops import rearrange
 from mmdet.models.builder import LOSSES
 from mmdet.models.losses.utils import weight_reduce_loss
 
-@LOSSES.register_module()
+@LOSSES.register_module(force=True)
 class FieryBinarySegmentationLoss(nn.Module):
     def __init__(self, use_top_k=False, top_k_ratio=1.0, future_discount=1.0, loss_weight=1.0, ignore_index=255):
         super().__init__()
@@ -137,7 +137,7 @@ def dice_loss(pred,
     loss = weight_reduce_loss(loss, weight, reduction, avg_factor)
     return loss
 
-@LOSSES.register_module()
+@LOSSES.register_module(force=True)
 class DiceLossWithMasks(nn.Module):
     def __init__(self,
                  use_sigmoid=True,

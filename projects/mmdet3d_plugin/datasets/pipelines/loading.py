@@ -2,10 +2,12 @@ import numpy as np
 import mmcv
 from mmdet.datasets.builder import PIPELINES
 from einops import rearrange
-from mmdet3d.datasets.pipelines import LoadAnnotations3D
+import sys
+sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+from third_party.uniad_mmdet3d.datasets.pipelines import LoadAnnotations3D
 import os
 
-@PIPELINES.register_module()
+@PIPELINES.register_module(force=True)
 class LoadMultiViewImageFromFilesInCeph(object):
     """Load multi channel images from a list of separate channel files.
 
@@ -82,7 +84,7 @@ class LoadMultiViewImageFromFilesInCeph(object):
         return repr_str
 
 
-@PIPELINES.register_module()
+@PIPELINES.register_module(force=True)
 class LoadAnnotations3D_E2E(LoadAnnotations3D):
     """Load Annotations3D.
 

@@ -60,8 +60,7 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
                 and model.module.with_occ_head
     if eval_occ:
         # 30mx30m, 100mx100m at 50cm resolution
-        EVALUATION_RANGES = {'30x30': (70, 130),
-                            '100x100': (0, 200)}
+        EVALUATION_RANGES = {'8x8': (17, 33), '25x25': (0, 50)}
         n_classes = 2
         iou_metrics = {}
         for key in EVALUATION_RANGES.keys():
@@ -74,7 +73,11 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
     eval_planning =  hasattr(model.module, 'with_planning_head') \
                       and model.module.with_planning_head
     if eval_planning:
-        planning_metrics = PlanningMetric().cuda()
+        planning_metrics = PlanningMetric(conf={
+            'xbound': [-12.5, 12.5, 0.5],
+            'ybound': [-12.5, 12.5, 0.5],
+            'zbound': [-10.0, 10.0, 20.0],
+        }).cuda()
         
     bbox_results = []
     mask_results = []
@@ -99,7 +102,8 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
                 result[0]['planning_traj'] = result[0]['planning']['result_planning']['sdc_traj']
                 result[0]['planning_traj_gt'] = result[0]['planning']['planning_gt']['sdc_planning']
                 result[0]['command'] = result[0]['planning']['planning_gt']['command']
-                planning_metrics(pred_sdc_traj[:, :6, :2], sdc_planning[0][0,:, :6, :2], sdc_planning_mask[0][0,:, :6, :2], segmentation[0][:, [1,2,3,4,5,6]])
+                planning_metrics(pred_sdc_traj[:, :6, :2], sdc_planning[0][0,:, :6, :2], 
+                                 sdc_planning_mask[0][0,:, :6, :2], segmentation[0][:, [1,2,3,4,5,6]])
 
             # Eval Occ
             if eval_occ:

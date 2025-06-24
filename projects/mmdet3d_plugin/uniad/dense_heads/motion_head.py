@@ -18,7 +18,7 @@ from .motion_head_plugin.motion_utils import nonlinear_smoother
 from .motion_head_plugin.base_motion_head import BaseMotionHead
 
 
-@HEADS.register_module()
+@HEADS.register_module(force=True)
 class MotionHead(BaseMotionHead):
     """
     MotionHead module for a neural network, which predicts motion trajectories and is used in an autonomous driving task.

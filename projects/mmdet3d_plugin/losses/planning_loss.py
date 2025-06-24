@@ -12,7 +12,7 @@ import pickle
 from mmdet.models import LOSSES
 
 
-@LOSSES.register_module()
+@LOSSES.register_module(force=True)
 class PlanningLoss(nn.Module):
     def __init__(self, loss_type='L2'):
         super(PlanningLoss, self).__init__()
@@ -26,7 +26,7 @@ class PlanningLoss(nn.Module):
         return torch.sum(err * mask)/(torch.sum(mask) + 1e-5)
 
 
-@LOSSES.register_module()
+@LOSSES.register_module(force=True)
 class CollisionLoss(nn.Module):
     def __init__(self, delta=0.5, weight=1.0):
         super(CollisionLoss, self).__init__()

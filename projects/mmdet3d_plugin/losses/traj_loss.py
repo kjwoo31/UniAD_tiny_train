@@ -12,7 +12,7 @@ from typing import Tuple
 
 from mmdet.models import LOSSES
 
-@LOSSES.register_module()
+@LOSSES.register_module(force=True)
 class TrajLoss(nn.Module):
     """
     MTP loss modified to include variances. Uses MSE for mode selection.

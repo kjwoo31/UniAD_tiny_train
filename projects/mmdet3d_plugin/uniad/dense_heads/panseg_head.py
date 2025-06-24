@@ -20,7 +20,7 @@ from mmdet.core import (bbox_cxcywh_to_xyxy, bbox_xyxy_to_cxcywh,
 from mmdet.models.utils import build_transformer
 from .seg_head_plugin import SegDETRHead, IOU
 
-@HEADS.register_module()
+@HEADS.register_module(force=True)
 class PansegformerHead(SegDETRHead):
     """
     Head of Panoptic SegFormer

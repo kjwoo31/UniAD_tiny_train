@@ -49,7 +49,7 @@ def inverse_sigmoid(x, eps=1e-5):
     return torch.log(x1 / x2)
 
 
-@TRANSFORMER_LAYER_SEQUENCE.register_module()
+@TRANSFORMER_LAYER_SEQUENCE.register_module(force=True)
 class DetectionTransformerDecoder(TransformerLayerSequence):
     """Implements the decoder in DETR3D transformer.
     Args:
@@ -129,7 +129,7 @@ class DetectionTransformerDecoder(TransformerLayerSequence):
         return output, reference_points
 
 
-@ATTENTION.register_module()
+@ATTENTION.register_module(force=True)
 class CustomMSDeformableAttention(BaseModule):
     """An attention module used in Deformable-Detr.
 

@@ -21,7 +21,7 @@ from mmcv.utils import ConfigDict, deprecated_api_warning
 from projects.mmdet3d_plugin.uniad.modules.multi_scale_deformable_attn_function import MultiScaleDeformableAttnFunction_fp32
 
 
-@TRANSFORMER_LAYER.register_module()
+@TRANSFORMER_LAYER.register_module(force=True)
 class MotionTransformerAttentionLayer(BaseModule):
     """Base `TransformerLayer` for vision transformer.
     It can be built from `mmcv.ConfigDict` and support more flexible
@@ -239,7 +239,7 @@ class MotionTransformerAttentionLayer(BaseModule):
 
         return query
 
-@ATTENTION.register_module()
+@ATTENTION.register_module(force=True)
 class MotionDeformableAttention(BaseModule):
     """An attention module used in Deformable-Detr.
 
@@ -486,7 +486,7 @@ class MotionDeformableAttention(BaseModule):
         out = torch.stack([torch.stack([cy, -sy]), torch.stack([sy, cy])]).permute([2,0,1])
         return out
 
-@ATTENTION.register_module()
+@ATTENTION.register_module(force=True)
 class CustomModeMultiheadAttention(BaseModule):
     """A wrapper for ``torch.nn.MultiheadAttention``.
     This module implements MultiheadAttention with identity connection,

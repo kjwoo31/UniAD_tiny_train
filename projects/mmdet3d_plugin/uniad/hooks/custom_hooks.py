@@ -1,7 +1,7 @@
 from mmcv.runner.hooks.hook import HOOKS, Hook
 
 
-@HOOKS.register_module()
+@HOOKS.register_module(force=True)
 class TransferWeight(Hook):
     
     def __init__(self, every_n_inters=1):

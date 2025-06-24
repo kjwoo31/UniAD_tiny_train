@@ -16,7 +16,7 @@ from projects.mmdet3d_plugin.models.utils.functional import (
 )
 
 
-@TRANSFORMER_LAYER_SEQUENCE.register_module()
+@TRANSFORMER_LAYER_SEQUENCE.register_module(force=True)
 class MotionTransformerDecoder(BaseModule):
     """Implements the decoder in DETR3D transformer.
     Args:

@@ -19,7 +19,7 @@ from .occ_head_plugin import MLP, BevFeatureSlicer, SimpleConv2d, CVT_Decoder, B
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
-@HEADS.register_module()
+@HEADS.register_module(force=True)
 class OccHead(BaseModule):
     def __init__(self, 
                  # General
@@ -35,6 +35,7 @@ class OccHead(BaseModule):
                  bev_emb_dim=256,
                  bev_proj_dim=64,
                  bev_proj_nlayers=1,
+                 bevslicer=True,
 
                  # Query
                  query_dim=256,
@@ -75,6 +76,7 @@ class OccHead(BaseModule):
             'zbound': [-10.0, 10.0, 20.0],
         }
         self.bev_sampler =  BevFeatureSlicer(bevformer_bev_conf, grid_conf)
+        self.bevslicer = bevslicer
         
         self.bev_size = bev_size
         self.bev_proj_dim = bev_proj_dim
@@ -196,9 +198,12 @@ class OccHead(BaseModule):
         return attn_mask, upsampled_mask_pred, ins_embed
 
     def forward(self, x, ins_query):
-        base_state = rearrange(x, '(h w) b d -> b d h w', h=self.bev_size[0])
+        # base_state = rearrange(x, '(h w) b d -> b d h w', h=self.bev_size[0])
+        _, b,d=x.shape
+        base_state = x.permute(1,2,0).view(b,d,self.bev_size[0],self.bev_size[1])
 
-        base_state = self.bev_sampler(base_state)
+        if self.bevslicer:
+            base_state = self.bev_sampler(base_state)
         base_state = self.bev_light_proj(base_state)
         base_state = self.base_downscale(base_state)
         base_ins_query = ins_query
@@ -228,8 +233,11 @@ class OccHead(BaseModule):
             mask_preds.append(mask_pred)  # /1
             temporal_embed_for_mask_attn.append(cur_ins_emb_for_mask_attn)
 
-            cur_state = rearrange(cur_state, 'b c h w -> (h w) b c')
-            cur_ins_query = rearrange(cur_ins_query, 'b q c -> q b c')
+            # cur_state = rearrange(cur_state, 'b c h w -> (h w) b c')
+            b,c,h,w=cur_state.shape
+            cur_state = cur_state.view(b,c,h*w).permute(2,0,1)
+            # cur_ins_query = rearrange(cur_ins_query, 'b q c -> q b c')
+            cur_ins_query=cur_ins_query.permute(1,0,2)
 
             for j in range(n_trans_layer_each_block):
                 trans_layer_ind = i * n_trans_layer_each_block + j
@@ -245,7 +253,10 @@ class OccHead(BaseModule):
                     key_padding_mask=None
                 )  # out size: [h'*w', b, c]
 
-            cur_state = rearrange(cur_state, '(h w) b c -> b c h w', h=self.bev_size[0]//8)
+            # cur_state = rearrange(cur_state, '(h w) b c -> b c h w', h=self.bev_size[0]//8)
+            cur_state_h = int(cur_state.shape[0]**0.5)
+            _, b, c = cur_state.shape
+            cur_state = cur_state.permute(1,2,0).view(b,c,cur_state_h,cur_state_h)
             
             # Upscale to /4
             cur_state = self.upsample_adds[i](cur_state, last_state)
@@ -261,6 +272,12 @@ class OccHead(BaseModule):
 
         # Decode future states to larger resolution
         future_states = self.dense_decoder(future_states)
+        future_states = F.interpolate(
+                        future_states,
+                        (int(future_states.shape[-3]), int(self.bev_size[-2]), int(self.bev_size[-1])),
+                        mode='trilinear',
+                        align_corners=False
+                        )
         ins_occ_query = self.query_to_occ_feat(ins_query)    # [b, t, q, query_out_dim]
         
         # Generate final outputs
@@ -449,7 +466,6 @@ class OccHead(BaseModule):
                 predict_instance_segmentation_and_trajectories(seg_out, pred_ins_sigmoid)  # bg is 0, fg starts with 1, consecutive
             
             out_dict['ins_seg_out'] = pred_consistent_instance_seg  # [1, 5, 200, 200]
-
         return out_dict
 
     def get_ins_seg_gt(self, gt_instance):

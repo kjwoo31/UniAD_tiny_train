@@ -2,7 +2,7 @@ from mmcv.runner.hooks.hook import HOOKS, Hook
 from projects.mmdet3d_plugin.models.utils import run_time
 
 
-@HOOKS.register_module()
+@HOOKS.register_module(force=True)
 class GradChecker(Hook):
 
     def after_train_iter(self, runner):

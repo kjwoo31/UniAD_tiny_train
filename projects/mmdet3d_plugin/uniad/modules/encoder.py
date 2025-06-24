@@ -23,7 +23,7 @@ ext_module = ext_loader.load_ext(
     '_ext', ['ms_deform_attn_backward', 'ms_deform_attn_forward'])
 
 
-@TRANSFORMER_LAYER_SEQUENCE.register_module()
+@TRANSFORMER_LAYER_SEQUENCE.register_module(force=True)
 class BEVFormerEncoder(TransformerLayerSequence):
 
     """
@@ -235,7 +235,7 @@ class BEVFormerEncoder(TransformerLayerSequence):
         return output
 
 
-@TRANSFORMER_LAYER.register_module()
+@TRANSFORMER_LAYER.register_module(force=True)
 class BEVFormerLayer(MyCustomBaseTransformerLayer):
     """Implements decoder layer in DETR transformer.
     Args:

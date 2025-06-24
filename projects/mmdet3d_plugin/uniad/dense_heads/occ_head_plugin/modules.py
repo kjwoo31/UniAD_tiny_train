@@ -225,6 +225,12 @@ class UpsamplingAdd(nn.Module):
 
     def forward(self, x, x_skip):
         x = self.upsample_layer(x)
+        x = F.interpolate(
+                        x,
+                        (int(x_skip.shape[-2]), int(x_skip.shape[-1])),
+                        mode='bilinear',
+                        align_corners=False
+                        )
         return x + x_skip
 
 class Interpolate(nn.Module):

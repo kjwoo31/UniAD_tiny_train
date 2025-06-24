@@ -13,7 +13,7 @@ from .planning_head_plugin import CollisionNonlinearOptimizer
 import numpy as np
 import copy
 
-@HEADS.register_module()
+@HEADS.register_module(force=True)
 class PlanningHeadSingleMode(nn.Module):
     def __init__(self,
                  bev_h=200,

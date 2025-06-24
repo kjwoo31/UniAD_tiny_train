@@ -17,15 +17,20 @@ class PlanningMetric(Metric):
         self,
         n_future=6,
         compute_on_step: bool = False,
+        conf = {
+            'xbound': [-50.0, 50.0, 0.5],
+            'ybound': [-50.0, 50.0, 0.5],
+            'zbound': [-10.0, 10.0, 20.0],
+        },
     ):
         super().__init__(compute_on_step=compute_on_step)
-        dx, bx, _ = gen_dx_bx([-50.0, 50.0, 0.5], [-50.0, 50.0, 0.5], [-10.0, 10.0, 20.0])
+        dx, bx, _ = gen_dx_bx(conf['xbound'], conf['ybound'], conf['zbound'])
         dx, bx = dx[:2], bx[:2]
         self.dx = nn.Parameter(dx, requires_grad=False)
         self.bx = nn.Parameter(bx, requires_grad=False)
 
         _, _, self.bev_dimension = calculate_birds_eye_view_parameters(
-            [-50.0, 50.0, 0.5], [-50.0, 50.0, 0.5], [-10.0, 10.0, 20.0]
+            conf['xbound'], conf['ybound'], conf['zbound']
         )
         self.bev_dimension = self.bev_dimension.numpy()
 

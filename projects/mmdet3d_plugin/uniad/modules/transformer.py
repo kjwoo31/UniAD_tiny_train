@@ -20,7 +20,7 @@ from .spatial_cross_attention import MSDeformableAttention3D
 from .decoder import CustomMSDeformableAttention
 from mmcv.runner import force_fp32, auto_fp16
 
-@TRANSFORMER.register_module()
+@TRANSFORMER.register_module(force=True)
 class PerceptionTransformer(BaseModule):
     """Implements the Detr3D transformer.
     Args:

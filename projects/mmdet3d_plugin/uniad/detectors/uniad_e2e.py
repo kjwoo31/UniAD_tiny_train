@@ -13,7 +13,7 @@ from ..dense_heads.seg_head_plugin import IOU
 from .uniad_track import UniADTrack
 from mmdet.models.builder import build_head
 
-@DETECTORS.register_module()
+@DETECTORS.register_module(force=True)
 class UniAD(UniADTrack):
     """
     UniAD: Unifying Detection, Tracking, Segmentation, Motion Forecasting, Occupancy Prediction and Planning for Autonomous Driving
@@ -31,6 +31,8 @@ class UniAD(UniADTrack):
             occ=1.0,
             planning=1.0
         ),
+        upsample_if_tiny=True,
+        upsample_scale_factor=4,
         **kwargs,
     ):
         super(UniAD, self).__init__(**kwargs)
@@ -44,6 +46,8 @@ class UniAD(UniADTrack):
             self.planning_head = build_head(planning_head)
         
         self.task_loss_weight = task_loss_weight
+        self.upsample_if_tiny = upsample_if_tiny
+        self.upsample_scale_factor = upsample_scale_factor
         assert set(task_loss_weight.keys()) == \
                {'track', 'occ', 'motion', 'map', 'planning'}
 
@@ -166,7 +170,8 @@ class UniAD(UniADTrack):
         losses.update(losses_track)
         
         # Upsample bev for tiny version
-        outs_track = self.upsample_bev_if_tiny(outs_track)
+        if self.upsample_if_tiny:
+            outs_track = self.upsample_bev_if_tiny(outs_track, scale_factor=self.upsample_scale_factor)
 
         bev_embed = outs_track["bev_embed"]
         bev_pos  = outs_track["bev_pos"]
@@ -254,6 +259,9 @@ class UniAD(UniADTrack):
                     ):
         """Test function
         """
+        img_metas = img_metas[0].data
+        img = img[0].data
+
         for var, name in [(img_metas, 'img_metas')]:
             if not isinstance(var, list):
                 raise TypeError('{} must be a list, but got {}'.format(
@@ -284,7 +292,7 @@ class UniAD(UniADTrack):
         self.prev_frame_info['prev_pos'] = tmp_pos
         self.prev_frame_info['prev_angle'] = tmp_angle
 
-        img = img[0]
+        img = img[0].cuda()
         img_metas = img_metas[0]
         timestamp = timestamp[0] if timestamp is not None else None
 
@@ -292,7 +300,8 @@ class UniAD(UniADTrack):
         result_track = self.simple_test_track(img, l2g_t, l2g_r_mat, img_metas, timestamp)
 
         # Upsample bev for tiny model        
-        result_track[0] = self.upsample_bev_if_tiny(result_track[0])
+        if self.upsample_if_tiny:
+            result_track[0] = self.upsample_bev_if_tiny(result_track[0], scale_factor=self.upsample_scale_factor)
         
         bev_embed = result_track[0]["bev_embed"]
 

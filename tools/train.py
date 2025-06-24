@@ -14,13 +14,14 @@ from mmcv.runner import get_dist_info, init_dist
 from os import path as osp
 
 from mmdet import __version__ as mmdet_version
-from mmdet3d import __version__ as mmdet3d_version
 
-from mmdet3d.datasets import build_dataset
-from mmdet3d.models import build_model
-from mmdet3d.utils import collect_env, get_root_logger
+import sys
+sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+from third_party.uniad_mmdet3d.datasets.builder import build_dataset
+from third_party.uniad_mmdet3d.models.builder import build_model
+from third_party.uniad_mmdet3d.utils import collect_env, get_root_logger
 from mmdet.apis import set_random_seed
-from mmseg import __version__ as mmseg_version
+# from mmseg import __version__ as mmseg_version
 
 warnings.filterwarnings("ignore")
 
@@ -76,14 +77,14 @@ def parse_args():
         choices=['none', 'pytorch', 'slurm', 'mpi'],
         default='none',
         help='job launcher')
-    # parser.add_argument('--local_rank', type=int, default=0)
+    parser.add_argument('--local_rank', type=int, default=0)
     parser.add_argument(
         '--autoscale-lr',
         action='store_true',
         help='automatically scale lr with the number of gpus')
     args = parser.parse_args()
-    # if 'LOCAL_RANK' not in os.environ:
-    #     os.environ['LOCAL_RANK'] = str(args.local_rank)
+    if 'LOCAL_RANK' not in os.environ:
+        os.environ['LOCAL_RANK'] = str(args.local_rank)
 
     if args.options and args.cfg_options:
         raise ValueError(
@@ -213,6 +214,10 @@ def main():
         cfg.model,
         train_cfg=cfg.get('train_cfg'),
         test_cfg=cfg.get('test_cfg'))
+    # text_file = open("model_dict_keys.log", 'w')
+    # import pdb; pdb.set_trace()
+    # text_file.write(str(model.state_dict().keys()))
+    # text_file.close()
     model.init_weights()
 
     logger.info(f'Model:\n{model}')
@@ -234,8 +239,8 @@ def main():
         # checkpoints as meta data
         cfg.checkpoint_config.meta = dict(
             mmdet_version=mmdet_version,
-            mmseg_version=mmseg_version,
-            mmdet3d_version=mmdet3d_version,
+            mmseg_version='do not import mmseg',
+            mmdet3d_version='my_custom_mmdet3d',
             config=cfg.pretty_text,
             CLASSES=datasets[0].CLASSES,
             PALETTE=datasets[0].PALETTE  # for segmentors
@@ -253,4 +258,5 @@ def main():
 
 
 if __name__ == '__main__':
+    torch.multiprocessing.set_start_method('fork')
     main()

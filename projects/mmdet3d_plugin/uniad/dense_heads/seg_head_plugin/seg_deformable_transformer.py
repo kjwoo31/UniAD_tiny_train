@@ -24,7 +24,7 @@ from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
 # Copy-paste from defromable detr in mmdet.
-@TRANSFORMER.register_module()
+@TRANSFORMER.register_module(force=True)
 class SegDeformableTransformer(Transformer):
     """Implements the DeformableDETR transformer.
 

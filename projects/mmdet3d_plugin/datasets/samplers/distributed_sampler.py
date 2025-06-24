@@ -5,7 +5,7 @@ from torch.utils.data import DistributedSampler as _DistributedSampler
 from .sampler import SAMPLER
 
 
-@SAMPLER.register_module()
+@SAMPLER.register_module(force=True)
 class DistributedSampler(_DistributedSampler):
 
     def __init__(self,

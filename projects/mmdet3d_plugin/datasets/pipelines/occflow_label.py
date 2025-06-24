@@ -7,7 +7,7 @@ from projects.mmdet3d_plugin.uniad.dense_heads.occ_head_plugin import calculate_
 from mmdet.datasets.builder import PIPELINES
 import os
 
-@PIPELINES.register_module()
+@PIPELINES.register_module(force=True)
 class GenerateOccFlowLabels(object):
     def __init__(self, grid_conf, ignore_index=255, only_vehicle=True, filter_invisible=True, deal_instance_255=False):
         self.grid_conf = grid_conf

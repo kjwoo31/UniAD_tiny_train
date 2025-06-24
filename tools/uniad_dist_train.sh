@@ -10,7 +10,7 @@ GPUS=$2                                              #
 GPUS_PER_NODE=$(($GPUS<8?$GPUS:8))
 NNODES=`expr $GPUS / $GPUS_PER_NODE`
 
-MASTER_PORT=${MASTER_PORT:-28596}
+MASTER_PORT=${MASTER_PORT:-28599}
 MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 RANK=${RANK:-0}
 
@@ -22,7 +22,7 @@ if [ ! -d ${WORK_DIR}logs ]; then
 fi
 
 PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
-python -m torch.distributed.run \
+python -m torch.distributed.launch \
     --nproc_per_node=${GPUS_PER_NODE} \
     --master_addr=${MASTER_ADDR} \
     --master_port=${MASTER_PORT} \
@@ -30,7 +30,7 @@ python -m torch.distributed.run \
     --node_rank=${RANK} \
     $(dirname "$0")/train.py \
     $CFG \
-    ${@:3} \
+    --launcher pytorch ${@:3} \
     --deterministic \
     --work-dir ${WORK_DIR} \
     2>&1 | tee ${WORK_DIR}logs/train.$T

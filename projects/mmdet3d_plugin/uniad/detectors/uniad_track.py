@@ -8,9 +8,10 @@ import torch
 import torch.nn as nn
 from mmcv.runner import auto_fp16
 from mmdet.models import DETECTORS
-from mmdet3d.core import bbox3d2result
-from mmdet3d.core.bbox.coders import build_bbox_coder
-from mmdet3d.models.detectors.mvx_two_stage import MVXTwoStageDetector
+import sys
+sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+from mmdet.core.bbox import build_bbox_coder
+from third_party.uniad_mmdet3d.models.detectors.mvx_two_stage import MVXTwoStageDetector
 from projects.mmdet3d_plugin.models.utils.grid_mask import GridMask
 import copy
 import math
@@ -20,7 +21,7 @@ from einops import rearrange
 from mmdet.models.utils.transformer import inverse_sigmoid
 from ..dense_heads.track_head_plugin import MemoryBank, QueryInteractionModule, Instances, RuntimeTrackerBase
 
-@DETECTORS.register_module()
+@DETECTORS.register_module(force=True)
 class UniADTrack(MVXTwoStageDetector):
     """UniAD tracking part
     """
@@ -580,9 +581,9 @@ class UniADTrack(MVXTwoStageDetector):
         losses = self.criterion.losses_dict
         return losses, out
 
-    def upsample_bev_if_tiny(self, outs_track):
+    def upsample_bev_if_tiny(self, outs_track, scale_factor=4):
         if outs_track["bev_embed"].size(0) == 100 * 100:
-            # For tiny model
+            # For small model
             # bev_emb
             bev_embed = outs_track["bev_embed"] # [10000, 1, 256]
             dim, _, _ = bev_embed.size()
@@ -613,6 +614,40 @@ class UniADTrack(MVXTwoStageDetector):
             # bev_pos
             bev_pos  = outs_track["bev_pos"]  # [1, 256, 100, 100]
             bev_pos = nn.Upsample(scale_factor=2)(bev_pos)  # [1, 256, 200, 200]
+            outs_track["bev_pos"] = bev_pos
+
+        elif outs_track["bev_embed"].size(0) == 50 * 50:
+            # For tiny model
+            # bev_emb
+            bev_embed = outs_track["bev_embed"] # [2500, 1, 256]
+            dim, _, _ = bev_embed.size()
+            w = h = int(math.sqrt(dim))
+            assert h == w == 50
+
+            bev_embed = rearrange(bev_embed, '(h w) b c -> b c h w', h=h, w=w)  # [1, 256, 50, 50]
+            bev_embed = nn.Upsample(scale_factor=scale_factor)(bev_embed)  # [1, 256, 200, 200]
+            bev_embed = rearrange(bev_embed, 'b c h w -> (h w) b c')
+            outs_track["bev_embed"] = bev_embed
+
+            # prev_bev
+            prev_bev = outs_track.get("prev_bev", None)
+            if prev_bev is not None:
+                if self.training:
+                    #  [1, 2500, 256]
+                    prev_bev = rearrange(prev_bev, 'b (h w) c -> b c h w', h=h, w=w)
+                    prev_bev = nn.Upsample(scale_factor=scale_factor)(prev_bev)  # [1, 256, 200, 200]
+                    prev_bev = rearrange(prev_bev, 'b c h w -> b (h w) c')
+                    outs_track["prev_bev"] = prev_bev
+                else:
+                    #  [2500, 1, 256]
+                    prev_bev = rearrange(prev_bev, '(h w) b c -> b c h w', h=h, w=w)
+                    prev_bev = nn.Upsample(scale_factor=scale_factor)(prev_bev)  # [1, 256, 200, 200]
+                    prev_bev = rearrange(prev_bev, 'b c h w -> (h w) b c')
+                    outs_track["prev_bev"] = prev_bev
+
+            # bev_pos
+            bev_pos  = outs_track["bev_pos"]  # [1, 256, 50, 50]
+            bev_pos = nn.Upsample(scale_factor=scale_factor)(bev_pos)  # [1, 256, 200, 200]
             outs_track["bev_pos"] = bev_pos
         return outs_track
 

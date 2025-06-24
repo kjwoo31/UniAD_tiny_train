@@ -17,7 +17,7 @@ from mmcv.cnn.bricks.registry import TRANSFORMER_LAYER
 from mmcv.cnn.bricks.transformer import build_feedforward_network, build_attention
 
 
-@TRANSFORMER_LAYER.register_module()
+@TRANSFORMER_LAYER.register_module(force=True)
 class MyCustomBaseTransformerLayer(BaseModule):
     """Base `TransformerLayer` for vision transformer.
     It can be built from `mmcv.ConfigDict` and support more flexible

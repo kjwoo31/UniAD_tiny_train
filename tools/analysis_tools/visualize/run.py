@@ -5,17 +5,17 @@ import os
 import glob
 import numpy as np
 import mmcv
-import matplotlib
-import matplotlib.pyplot as plt
+# import matplotlib
+# import matplotlib.pyplot as plt
 from nuscenes import NuScenes
-from nuscenes.prediction import PredictHelper, convert_local_coords_to_global
-from nuscenes.utils.geometry_utils import view_points, box_in_image, BoxVisibility, transform_matrix
-from nuscenes.utils.data_classes import LidarPointCloud, Box
+from nuscenes.prediction import PredictHelper#, convert_local_coords_to_global
+# from nuscenes.utils.geometry_utils import view_points, box_in_image, BoxVisibility, transform_matrix
+# from nuscenes.utils.data_classes import LidarPointCloud, Box
 from nuscenes.utils import splits
-from pyquaternion import Quaternion
-from projects.mmdet3d_plugin.datasets.nuscenes_e2e_dataset import obtain_map_info
+# from pyquaternion import Quaternion
+# from projects.mmdet3d_plugin.datasets.nuscenes_e2e_dataset import obtain_map_info
 from projects.mmdet3d_plugin.datasets.eval_utils.map_api import NuScenesMap
-from PIL import Image
+# from PIL import Image
 from tools.analysis_tools.visualize.utils import color_mapping, AgentPredictionData
 from tools.analysis_tools.visualize.render.bev_render import BEVRender
 from tools.analysis_tools.visualize.render.cam_render import CameraRender
@@ -281,6 +281,24 @@ class Visualizer:
             out.write(img_array[i])
         out.release()
 
+def to_video(folder_path, out_path, fps=4, downsample=1):
+    imgs_path = glob.glob(os.path.join(folder_path, '*.jpg'))
+    imgs_path = sorted(imgs_path)
+    img_array = []
+    for img_path in imgs_path:
+        img = cv2.imread(img_path)
+        height, width, channel = img.shape
+        img = cv2.resize(img, (width//downsample, height //
+                            downsample), interpolation=cv2.INTER_AREA)
+        height, width, channel = img.shape
+        size = (width, height)
+        img_array.append(img)
+    out = cv2.VideoWriter(
+        out_path, cv2.VideoWriter_fourcc(*'DIVX'), fps, size)
+    for i in range(len(img_array)):
+        out.write(img_array[i])
+    out.release() 
+
 def main(args):
     render_cfg = dict(
         with_occ_map=False,
@@ -296,8 +314,10 @@ def main(args):
         show_legend=True,
         show_sdc_traj=False
     )
-
-    viser = Visualizer(version='v1.0-mini', predroot=args.predroot, dataroot='data/nuscenes', **render_cfg)
+    to_video('/home/labuser/bjyang/UniAD_train/UniAD/output/tiny_e2e_img_videos/selected', 
+             '/home/labuser/bjyang/UniAD_train/UniAD/output/tiny_e2e_img_videos/selected/tiny_e2e_torch1.12_438-552.avi', fps=4, downsample=2)
+    import pdb; pdb.set_trace()
+    viser = Visualizer(version='v1.0-trainval', predroot=args.predroot, dataroot='data/nuscenes', **render_cfg)
 
     if not os.path.exists(args.out_folder):
         os.makedirs(args.out_folder)

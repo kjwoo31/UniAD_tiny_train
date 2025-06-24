@@ -21,7 +21,7 @@ ext_module = ext_loader.load_ext(
     '_ext', ['ms_deform_attn_backward', 'ms_deform_attn_forward'])
 
 
-@ATTENTION.register_module()
+@ATTENTION.register_module(force=True)
 class TemporalSelfAttention(BaseModule):
     """An attention module used in BEVFormer based on Deformable-Detr.
 

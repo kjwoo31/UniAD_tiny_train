@@ -63,10 +63,6 @@ occ_n_future_max = max([occ_n_future, occ_n_future_plan])
 ### planning ###
 planning_steps = 6
 use_col_optim = True
-# there exists multiple interpretations of the planning metric, where it differs between uniad and stp3/vad
-# uniad: computed at a particular time (e.g., L2 distance between the predicted and ground truth future trajectory at time 3.0s)
-# stp3: computed as the average up to a particular time (e.g., average L2 distance between the predicted and ground truth future trajectory up to 3.0s)
-planning_evaluation_strategy = "uniad"  # uniad or stp3
 
 ### Occ args ### 
 occflow_grid_conf = {
@@ -74,6 +70,7 @@ occflow_grid_conf = {
     'ybound': [-50.0, 50.0, 0.5],
     'zbound': [-10.0, 10.0, 20.0],
 }
+evaluation_ranges = {'30x30': (70, 130), '100x100': (0, 200)}
 
 # Other settings
 train_gt_iou_threshold=0.3
@@ -574,11 +571,7 @@ lr_config = dict(
     min_lr_ratio=1e-3,
 )
 total_epochs = 6
-evaluation = dict(
-    interval=6,
-    pipeline=test_pipeline,
-    planning_evaluation_strategy=planning_evaluation_strategy,
-)
+evaluation = dict(interval=6, pipeline=test_pipeline)
 runner = dict(type="EpochBasedRunner", max_epochs=total_epochs)
 log_config = dict(
     interval=10, hooks=[dict(type="TextLoggerHook"), dict(type="TensorboardLoggerHook")]

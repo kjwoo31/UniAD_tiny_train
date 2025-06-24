@@ -3,10 +3,12 @@ from numpy import random
 import mmcv
 from mmdet.datasets.builder import PIPELINES
 from mmcv.parallel import DataContainer as DC
-from mmdet3d.datasets.pipelines.transforms_3d import ObjectRangeFilter, ObjectNameFilter
-from mmdet3d.core.bbox import CameraInstance3DBoxes, DepthInstance3DBoxes, LiDARInstance3DBoxes
+import sys
+sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+from third_party.uniad_mmdet3d.datasets.pipelines import ObjectRangeFilter, ObjectNameFilter
+from third_party.uniad_mmdet3d.core.bbox import CameraInstance3DBoxes, DepthInstance3DBoxes, LiDARInstance3DBoxes
 
-@PIPELINES.register_module()
+@PIPELINES.register_module(force=True)
 class PadMultiViewImage(object):
     """Pad the multi-view image.
     There are two padding modes: (1) pad to a fixed size and (2) pad to the
@@ -60,7 +62,7 @@ class PadMultiViewImage(object):
         return repr_str
 
 
-@PIPELINES.register_module()
+@PIPELINES.register_module(force=True)
 class NormalizeMultiviewImage(object):
     """Normalize the image.
     Added key is "img_norm_cfg".
@@ -97,7 +99,7 @@ class NormalizeMultiviewImage(object):
         return repr_str
 
 
-@PIPELINES.register_module()
+@PIPELINES.register_module(force=True)
 class PhotoMetricDistortionMultiViewImage:
     """Apply photometric distortion to image sequentially, every transformation
     is applied with a probability of 0.5. The position of random contrast is in
@@ -198,7 +200,7 @@ class PhotoMetricDistortionMultiViewImage:
 
 
 
-@PIPELINES.register_module()
+@PIPELINES.register_module(force=True)
 class CustomCollect3D(object):
     """Collect data from the loader relevant to the specific task.
     This is usually the last stage of the data loader pipeline. Typically keys
@@ -286,7 +288,7 @@ class CustomCollect3D(object):
 
 
 
-@PIPELINES.register_module()
+@PIPELINES.register_module(force=True)
 class RandomScaleImageMultiViewImage(object):
     """Random scale the image
     Args:
@@ -327,7 +329,7 @@ class RandomScaleImageMultiViewImage(object):
         repr_str += f'(size={self.scales}, '
         return repr_str
 
-@PIPELINES.register_module()
+@PIPELINES.register_module(force=True)
 class ObjectRangeFilterTrack(object):
     """Filter objects by the range.
     Args:
@@ -407,7 +409,7 @@ class ObjectRangeFilterTrack(object):
         repr_str += f'(point_cloud_range={self.pcd_range.tolist()})'
         return repr_str
 
-@PIPELINES.register_module()
+@PIPELINES.register_module(force=True)
 class ObjectNameFilterTrack(object):
     """Filter GT objects by their names.
     Args:
@@ -444,7 +446,7 @@ class ObjectNameFilterTrack(object):
         repr_str += f'(classes={self.classes})'
         return repr_str
 
-@PIPELINES.register_module()
+@PIPELINES.register_module(force=True)
 class CustomObjectRangeFilter(ObjectRangeFilter):
     def __call__(self, results):
         """Call function to filter objects by the range.
@@ -479,7 +481,7 @@ class CustomObjectRangeFilter(ObjectRangeFilter):
 
         return results
 
-@PIPELINES.register_module()
+@PIPELINES.register_module(force=True)
 class CustomObjectNameFilter(ObjectNameFilter):
     def __call__(self, results):
         """Call function to filter objects by their names.

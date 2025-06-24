@@ -9,9 +9,9 @@ import sys
 sys.path.append('.')
 from projects.mmdet3d_plugin.datasets.builder import build_dataloader
 from projects.mmdet3d_plugin.datasets import custom_build_dataset
-# from mmdet3d.datasets import build_dataloader, build_dataset
-from mmdet3d.models import build_detector
-#from tools.misc.fuse_conv_bn import fuse_module
+import sys
+sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+from third_party.uniad_mmdet3d.models import build_detector
 
 
 def parse_args():

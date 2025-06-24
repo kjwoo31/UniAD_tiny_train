@@ -306,7 +306,7 @@ class DropPath(nn.Module):
         return drop_path(x, self.drop_prob, self.training)
 
 
-@TRANSFORMER.register_module()
+@TRANSFORMER.register_module(force=True)
 class SegMaskHead(nn.Module):
     def __init__(self,
                  cfg=None,

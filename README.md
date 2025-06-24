@@ -8,7 +8,7 @@
   <a href="https://arxiv.org/abs/2212.10156">arXiv</a> |
   <a href="https://www.youtube.com/watch?v=cyrxJJ_nnaQ">Video</a> |
   <a href="sources/cvpr23_uniad_poster.png">Poster</a> |
-  <a href="https://opendrivelab.github.io/UniAD_plenary_talk_slides.pdf">Slides</a>
+  <a href="https://opendrivelab.com/e2ead/UniAD_plenary_talk_slides.pdf">Slides</a>
 </h3>
 
 
@@ -20,21 +20,11 @@ https://github.com/OpenDriveLab/UniAD/assets/48089846/bcf685e4-2471-450e-8b77-e0
 
 
 
+
+
 <br><br>
 
-## 🚀 `2025/02/27` UniAD 2.0 Preview
-
-We’re thrilled to announce ​**UniAD 2.0**, a milestone release delivering critical upgrades and future-ready capabilities!
-
-🔑 ​**Key Enhancements**​ 
-- 🛠️ ​**​Framework**: Migrating to `mmdet3d 1.x` & `torch 2.x` (commonly used version today).  
-- 🔄 ​**Compatibility**: Existing workflows preserved - replicate our results via [Evaluation Example](docs/TRAIN_EVAL.md#example). 
-- 📊 ​**Dataset**: Integrating [nuPlan](https://www.nuscenes.org/nuplan) and [NAVSIM](https://github.com/autonomousvision/navsim) datasets.  
-
-​📅 ​**TODO List**
-- [x] Framework upgrade​ (`mmdet3d 1.0.0rc6`,  `torch 2.0.1+cu118`) → [Installation Guide](docs/INSTALL.md).
-- [ ] Tools release for nuPlan and NAVSIM benchmark. [ETA 2025Q2]
-
+![teaser](sources/pipeline.png)
 
 ## Table of Contents:
 1. [Highlights](#high)
@@ -46,8 +36,9 @@ We’re thrilled to announce ​**UniAD 2.0**, a milestone release delivering cr
    - [GPU Requirements](docs/TRAIN_EVAL.md#gpu)
    - [Train/Eval](docs/TRAIN_EVAL.md)
 4. [Results and Models](#models)
-5. [License](#license)
-6. [Citation](#citation)
+5. [TODO List](#todos)
+6. [License](#license)
+7. [Citation](#citation)
 8. [🔥 See Also: GenAD & Vista](#see)
 
 ## Highlights <a name="high"></a>
@@ -60,8 +51,6 @@ We’re thrilled to announce ​**UniAD 2.0**, a milestone release delivering cr
 - **`Paper Title Change`**: To avoid confusion with the "goal-point" navigation in Robotics, we change the title from "Goal-oriented" to "Planning-oriented" suggested by Reviewers. Thank you!
 
 - **`Planning Metric`**: Discussion [Ref: https://github.com/OpenDriveLab/UniAD/issues/29]: [Clarification](https://github.com/OpenDriveLab/UniAD/issues/29#issuecomment-1583070151) and [Notice](https://github.com/OpenDriveLab/UniAD/issues/29#issuecomment-1717594344) regarding open-loop planning results comparison.
-
-- **`2024/08/27`** New feature: Implementation for CARLA and closed-loop evaluation on CARLA Leaderboard 2.0 scenarios are available in [Bench2Drive](https://github.com/Thinklab-SJTU/Bench2Drive).
 
 - **`2023/08/03`** Bugfix [[Commit](https://github.com/OpenDriveLab/UniAD/commit/2e1380143d7af7c93bd67725a11d6960fa4347c6)]: Previously, the visualized planning results were in opposition on the x axis, compared to the ground truth. Now it's fixed.
 
@@ -106,46 +95,6 @@ Pre-trained models and results under main metrics are provided below. We refer y
 | :---: | :---: | :---: | :---: | :---:|:---:| :---: | :---: | :---: |
 | UniAD-B | R101 | 0.363 | 0.313 | 0.705 | 63.7 | 0.29 |  [base-stage2](projects/configs/stage2_e2e/base_e2e.py) | [base-stage2](https://github.com/OpenDriveLab/UniAD/releases/download/v1.0.1/uniad_base_e2e.pth) |
 
-> Planning results on the nuScense benchmark
-
-<table style="text-align: center; vertical-align: middle;">
-  <tr>
-    <td rowspan = "2" > Method </td>
-    <td rowspan = "2" > Encoder </td>
-    <td colspan="4">L2(m)</td>
-    <td colspan="4">Col. Rate(%)</td>
-  </tr>
-  <tr>
-    <td>1s</td>
-    <td>2s</td>
-    <td>3s</td>
-    <td>Avg.</td>
-    <td>1s</td>
-    <td>2s</td>
-    <td>3s</td>
-    <td>Avg.</td>
-  </tr>
-  <tr>
-    <td>UniAD-B</td>
-    <td>R101</td>
-    <td>0.48</td>
-    <td>0.96</td>
-    <td>1.65</td>
-    <td>1.03</td>
-    <td>0.05</td>
-    <td>0.17</td>
-    <td>0.71</td>
-    <td>0.31</td>
-  </tr>
-</table>
-
-> ✨NEW in v2.0: Planning results on the NAVSIM benchmark (from [NAVSIM](https://arxiv.org/abs/2406.15349)).
-
-
-| Method | Encoder | NC | DAC | TTC | Comf. | EP | PDMS | 
-| :---: | :---: | :---: | :---: | :---:|:---:|:---:|:---:|
-| UniAD | R34 | 97.8 | 91.9 | 92.9 | 100 | 78.8 | 83.4 |
-
 ### Checkpoint Usage
 * Download the checkpoints you need into `UniAD/ckpts/` directory.
 * You can evaluate these checkpoints to reproduce the results, following the `evaluation` section in [TRAIN_EVAL.md](docs/TRAIN_EVAL.md).
@@ -154,6 +103,17 @@ Pre-trained models and results under main metrics are provided below. We refer y
 
 ### Model Structure
 The overall pipeline of UniAD is controlled by [uniad_e2e.py](projects/mmdet3d_plugin/uniad/detectors/uniad_e2e.py) which coordinates all the task modules in `UniAD/projects/mmdet3d_plugin/uniad/dense_heads`. If you are interested in the implementation of a specific task module, please refer to its corresponding file, e.g., [motion_head](projects/mmdet3d_plugin/uniad/dense_heads/motion_head.py).
+
+## TODO List <a name="todos"></a>
+- [ ] All configs & checkpoints
+- [ ] Upgrade the implementation of MapFormer from Panoptic SegFormer to [TopoNet](https://github.com/OpenDriveLab/TopoNet), which features the vectorized map representations and topology reasoning.
+- [ ] Support larger batch size
+- [ ] [Long-term] Improve flexibility for future extensions
+- [x] Fix bug: Unable to reproduce the results of stage1 track-map model when training from scratch. [Ref: https://github.com/OpenDriveLab/UniAD/issues/21]
+- [x] Visualization codes 
+- [x] Separating BEV encoder and tracking module
+- [x] Base-model configs & checkpoints
+- [x] Code initialization
 
 
 ## License <a name="license"></a>
@@ -196,7 +156,7 @@ If you find our project useful for your research, please consider citing our pap
 We are thrilled to launch our recent line of works: [GenAD](https://arxiv.org/abs/2403.09630) and [Vista](https://arxiv.org/abs/2405.17398), to advance  **driving world models** with the **largest driving video dataset** collected from the web - [OpenDV](https://github.com/OpenDriveLab/DriveAGI/tree/main/opendv).
 
 
-[GenAD](https://github.com/OpenDriveLab/DriveAGI): **Generalized Predictive Model for Autonomous Driving** (CVPR'24, Highlight ⭐)
+[GenAD](https://github.com/OpenDriveLab/DriveAGI): Generalized Predictive Model for Autonomous Driving (CVPR'24, Highlight ⭐)
 
 <div id="top" align="center">
 <p align="center">
@@ -205,7 +165,7 @@ We are thrilled to launch our recent line of works: [GenAD](https://arxiv.org/ab
 </div>
 
 
-[Vista](https://github.com/OpenDriveLab/Vista): **A Generalizable Driving World Model with High Fidelity and Versatile Controllability** 🌏
+[Vista](https://github.com/OpenDriveLab/Vista): A Generalizable Driving World Model with High Fidelity and Versatile Controllability 🌏
 <div id="top" align="center">
 <p align="center">
 <img src="sources/vista.gif" width="1000px" >

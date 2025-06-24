@@ -1,5 +1,7 @@
 from .track_instance import Instances
-from mmdet3d.core.bbox.iou_calculators.iou3d_calculator import (
+import sys
+sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+from third_party.uniad_mmdet3d.core.bbox.iou_calculators.iou3d_calculator import (
     bbox_overlaps_nearest_3d as iou_3d, )
 from projects.mmdet3d_plugin.core.bbox.util import denormalize_bbox
 
