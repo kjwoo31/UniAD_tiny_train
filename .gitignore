@@ -150,3 +150,5 @@ debug/
 *projs/
 
 core.*
+
+nuscenes_np/
