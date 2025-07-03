@@ -1,8 +1,10 @@
 from .track_instance import Instances
 import sys
-sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+# sys.path.insert(1, '/path/to/UniAD_tensorrt')
 from third_party.uniad_mmdet3d.core.bbox.iou_calculators.iou3d_calculator import (
     bbox_overlaps_nearest_3d as iou_3d, )
+# from mmdet3d.core.bbox.iou_calculators.iou3d_calculator import (
+#     bbox_overlaps_nearest_3d as iou_3d, )
 from projects.mmdet3d_plugin.core.bbox.util import denormalize_bbox
 
 class RuntimeTrackerBase(object):
@@ -23,7 +25,8 @@ class RuntimeTrackerBase(object):
                 and track_instances.scores[i] >= self.score_thresh
             ):  
                 if iou_thre is not None and track_instances.pred_boxes[track_instances.obj_idxes>=0].shape[0]!=0:
-                    iou3ds = iou_3d(denormalize_bbox(track_instances.pred_boxes[i].unsqueeze(0), None)[...,:7], denormalize_bbox(track_instances.pred_boxes[track_instances.obj_idxes>=0], None)[...,:7])
+                    iou3ds = iou_3d(denormalize_bbox(track_instances.pred_boxes[i].unsqueeze(0), None)[...,:7],
+                                    denormalize_bbox(track_instances.pred_boxes[track_instances.obj_idxes>=0], None)[...,:7])
                     if iou3ds.max()>iou_thre:
                         continue
                 # new track

@@ -107,7 +107,7 @@ class HungarianAssigner3D(BaseAssigner):
         # classification and bboxcost.
         cls_cost = self.cls_cost(cls_pred, gt_labels)
         # regression L1 cost
-       
+
         normalized_gt_bboxes = normalize_bbox(gt_bboxes, self.pc_range)
     
         reg_cost = self.reg_cost(bbox_pred[:, :8], normalized_gt_bboxes[:, :8])

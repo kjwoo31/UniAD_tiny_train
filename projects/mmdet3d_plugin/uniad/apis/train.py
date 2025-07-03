@@ -1,5 +1,5 @@
 from .mmdet_train import custom_train_detector
-# from mmseg.apis import train_segmentor
+from mmseg.apis import train_segmentor
 from mmdet.apis import train_detector
 
 def custom_train_model(model,

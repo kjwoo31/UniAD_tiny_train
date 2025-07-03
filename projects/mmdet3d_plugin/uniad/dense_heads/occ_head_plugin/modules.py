@@ -6,6 +6,7 @@
 
 import torch
 from torch import nn
+import torchvision
 import torch.utils.checkpoint as checkpoint
 from .utils import calculate_birds_eye_view_parameters
 import torch.nn.functional as F
@@ -200,8 +201,8 @@ class CVT_Decoder(BaseModule):
             self.init_cfg = dict(type='Kaiming', layer='Conv2d')
 
     def forward(self, x):
-        b, t = x.size(0), x.size(1)
-        x = rearrange(x, 'b t c h w -> (b t) c h w')
+        b, t, c, h, w=x.shape
+        x=x.view(b*t, c, h, w)
         y = x
         for layer in self.layers:
             if self.use_checkpoint:
@@ -209,7 +210,8 @@ class CVT_Decoder(BaseModule):
             else:
                 y = layer(y, x)
         
-        y = rearrange(y, '(b t) c h w -> b t c h w', b=b, t=t)
+        _, c, h, w = y.shape
+        y = y.view(b,t,c,h,w)
         return y
 
 
@@ -227,7 +229,7 @@ class UpsamplingAdd(nn.Module):
         x = self.upsample_layer(x)
         x = F.interpolate(
                         x,
-                        (int(x_skip.shape[-2]), int(x_skip.shape[-1])),
+                        (x_skip.shape[-2], x_skip.shape[-1]),
                         mode='bilinear',
                         align_corners=False
                         )

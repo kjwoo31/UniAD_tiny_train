@@ -99,7 +99,7 @@ occflow_grid_conf = {
 }
 evaluation_ranges = {'8x8': (17, 33), '25x25': (0, 50)}
 bevslicer=False
-upsample_if_tiny=False
+# upsample_if_tiny=False
 
 # Other settings
 train_gt_iou_threshold=0.3

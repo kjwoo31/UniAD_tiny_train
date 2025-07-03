@@ -11,6 +11,16 @@ import torch.nn as nn
 from mmdet.models import  build_loss
 from mmcv.cnn.bricks.transformer import build_transformer_layer_sequence
 
+class View(nn.Module):
+    def __init__(self, dim, shape):
+        super(View, self).__init__()
+        self.dim = dim
+        self.shape = shape
+
+    def forward(self, input):
+        new_shape = list(input.shape)[:self.dim] + list(self.shape) + list(input.shape)[self.dim+1:]
+        return input.view(*new_shape)
+
 class BaseMotionHead(nn.Module):
     def __init__(self, *args, **kwargs):
         super(BaseMotionHead, self).__init__()
@@ -27,6 +37,7 @@ class BaseMotionHead(nn.Module):
             None
         """
         self.loss_traj = build_loss(loss_traj)
+        nn.Unflatten = View
         self.unflatten_traj = nn.Unflatten(3, (self.predict_steps, 5))
         self.log_softmax = nn.LogSoftmax(dim=2)
 

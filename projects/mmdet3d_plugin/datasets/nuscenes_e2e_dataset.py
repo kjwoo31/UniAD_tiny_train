@@ -10,9 +10,11 @@ import torch
 import mmcv
 from mmdet.datasets import DATASETS
 from mmdet.datasets.pipelines import to_tensor
+# from mmdet3d.datasets import NuScenesDataset
 import sys
-sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+# sys.path.insert(1, '/path/to/UniAD_tensorrt')
 from third_party.uniad_mmdet3d.datasets import NuScenesDataset
+# from mmdet3d.core.bbox import LiDARInstance3DBoxes
 from third_party.uniad_mmdet3d.core.bbox import LiDARInstance3DBoxes
 
 from os import path as osp
@@ -96,12 +98,10 @@ class NuScenesE2EDataset(NuScenesDataset):
                              dataroot=self.data_root, verbose=True)
 
         self.map_num_classes = 3
-        if canvas_size[0] == 50 or 100:
+        if canvas_size[0] == 50:
             self.thickness = 1
         elif canvas_size[0] == 200:
             self.thickness = 2
-        # elif canvas_size[0] == 100:
-        #     self.thickness = 2
         else:
             assert False
         self.angle_class = 36

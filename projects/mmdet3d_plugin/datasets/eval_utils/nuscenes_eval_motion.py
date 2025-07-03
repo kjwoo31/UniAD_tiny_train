@@ -39,6 +39,7 @@ from nuscenes.eval.detection.data_classes import DetectionConfig, DetectionMetri
     DetectionMetricDataList
 from nuscenes.eval.detection.render import summary_plot, class_pr_curve, dist_pr_curve, visualize_sample
 from nuscenes.eval.common.utils import quaternion_yaw, Quaternion
+# from mmdet3d.core.bbox.iou_calculators import BboxOverlaps3D
 from IPython import embed
 import json
 from typing import Any
@@ -876,7 +877,7 @@ if __name__ == "__main__":
         type=str,
         default='val',
         help='Which dataset split to evaluate on, train, val or test.')
-    parser.add_argument('--dataroot', type=str, default='data/nuscenes',
+    parser.add_argument('--dataroot', type=str, default='./data/nuscenes',
                         help='Default nuScenes data directory.')
     parser.add_argument(
         '--version',

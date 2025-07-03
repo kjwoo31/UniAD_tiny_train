@@ -12,11 +12,13 @@ from mmcv.runner.base_module import BaseModule
 from projects.mmdet3d_plugin.models.utils.functional import (
     norm_points,
     pos2posemb2d,
-    trajectory_coordinate_transform
+    trajectory_coordinate_transform,
+    rot_2d
 )
+from einops import rearrange
 
 
-@TRANSFORMER_LAYER_SEQUENCE.register_module(force=True)
+@TRANSFORMER_LAYER_SEQUENCE.register_module()
 class MotionTransformerDecoder(BaseModule):
     """Implements the decoder in DETR3D transformer.
     Args:
@@ -158,6 +160,307 @@ class MotionTransformerDecoder(BaseModule):
                     2), track_bbox_results, with_translation_transform=True, with_rotation_transform=False).squeeze(2).detach()
                 ep_agent_embed = trajectory_coordinate_transform(reference_trajs.unsqueeze(
                     2), track_bbox_results, with_translation_transform=False, with_rotation_transform=True).squeeze(2).detach()
+
+                agent_level_embedding = agent_level_embedding_layer(pos2posemb2d(
+                    norm_points(ep_agent_embed[..., -1, :], self.pc_range)))
+                scene_level_ego_embedding = scene_level_ego_embedding_layer(pos2posemb2d(
+                    norm_points(ep_ego_embed[..., -1, :], self.pc_range)))
+                scene_level_offset_embedding = scene_level_offset_embedding_layer(pos2posemb2d(
+                    norm_points(ep_offset_embed[..., -1, :], self.pc_range)))
+
+                intermediate.append(query_embed)
+                intermediate_reference_trajs.append(reference_trajs)
+
+        return torch.stack(intermediate), torch.stack(intermediate_reference_trajs)
+
+
+@TRANSFORMER_LAYER_SEQUENCE.register_module()
+class MotionTransformerDecoderTRT(MotionTransformerDecoder):
+    """Implements the decoder in DETR3D transformer.
+    Args:
+        return_intermediate (bool): Whether to return intermediate outputs.
+        coder_norm_cfg (dict): Config of last normalization layer. Default：
+            `LN`.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward_trt(self,
+                track_query,
+                lane_query,
+                track_query_pos=None,
+                lane_query_pos=None,
+                track_bbox_results=None,
+                bev_embed=None,
+                reference_trajs=None,
+                traj_reg_branches=None,
+                agent_level_embedding=None,
+                scene_level_ego_embedding=None,
+                scene_level_offset_embedding=None,
+                learnable_embed=None,
+                agent_level_embedding_layer=None,
+                scene_level_ego_embedding_layer=None,
+                scene_level_offset_embedding_layer=None,
+                **kwargs):
+        """Forward function for `MotionTransformerDecoder`.
+        Args:
+            agent_query (B, A, D)
+            map_query (B, M, D)
+            map_query_pos (B, G, D)
+            static_intention_embed (B, A, P, D)
+            offset_query_embed (B, A, P, D)
+            global_intention_embed (B, A, P, D)
+            learnable_intention_embed (B, A, P, D)
+            det_query_pos (B, A, D)
+        Returns:
+            None
+        """
+        intermediate = []
+        intermediate_reference_trajs = []
+
+        B, _, P, D = agent_level_embedding.shape
+        track_query_bc = track_query[:,:,None,...].expand(-1, -1, P, -1)  # (B, A, P, D)
+        track_query_pos_bc = track_query_pos[:,:,None, ...].expand(-1, -1, P, -1)  # (B, A, P, D)
+
+        # static intention embedding, which is imutable throughout all layers
+        agent_level_embedding = self.intention_interaction_layers(agent_level_embedding)
+        static_intention_embed = agent_level_embedding + scene_level_offset_embedding + learnable_embed
+        reference_trajs_input = reference_trajs[:,:,:,:,None,...].detach()
+
+        query_embed = torch.zeros_like(static_intention_embed)
+        for lid in range(self.num_layers):
+            # fuse static and dynamic intention embedding
+            # the dynamic intention embedding is the output of the previous layer, which is initialized with anchor embedding
+            dynamic_query_embed = self.dynamic_embed_fuser(torch.cat(
+                [agent_level_embedding, scene_level_offset_embedding, scene_level_ego_embedding], dim=-1))
+
+            # fuse static and dynamic intention embedding
+            query_embed_intention = self.static_dynamic_fuser(torch.cat(
+                [static_intention_embed, dynamic_query_embed], dim=-1))  # (B, A, P, D)
+
+            # fuse intention embedding with query embedding
+            query_embed = self.in_query_fuser(torch.cat([query_embed, query_embed_intention], dim=-1))
+
+            # interaction between agents
+            track_query_embed = self.track_agent_interaction_layers[lid](
+                query_embed, track_query, query_pos=track_query_pos_bc, key_pos=track_query_pos)
+
+            # interaction between agents and map
+            map_query_embed = self.map_interaction_layers[lid](
+                query_embed, lane_query, query_pos=track_query_pos_bc, key_pos=lane_query_pos)
+
+            # interaction between agents and bev, ie. interaction between agents and goals
+            # implemented with deformable transformer
+            bev_query_embed = self.bev_interaction_layers[lid].forward_trt(
+                query_embed,
+                value=bev_embed,
+                query_pos=track_query_pos_bc,
+                bbox_results=track_bbox_results,
+                reference_trajs=reference_trajs_input,
+                **kwargs)
+
+            # fusing the embeddings from different interaction layers
+            query_embed = [track_query_embed, map_query_embed, bev_query_embed, track_query_bc+track_query_pos_bc]
+            query_embed = torch.cat(query_embed, dim=-1)
+            query_embed = self.out_query_fuser(query_embed)
+
+            if traj_reg_branches is not None:
+                # update reference trajectory
+                tmp = traj_reg_branches[lid](query_embed)
+                bs, n_agent, n_modes, n_steps, _ = reference_trajs.shape
+                last_dim = tmp.numel()//(bs*n_agent*n_modes*n_steps)
+                tmp = tmp.view(bs, n_agent, n_modes, n_steps, last_dim)
+
+                # we predict speed of trajectory and use cumsum trick to get the trajectory
+                tmp[..., :2] = torch.cumsum(tmp[..., :2], dim=3)
+                new_reference_trajs = torch.zeros_like(reference_trajs)
+                new_reference_trajs = tmp[..., :2]
+                reference_trajs = new_reference_trajs.detach()
+                reference_trajs_input = reference_trajs[:,:,:,:,None,...]# BS NUM_AGENT NUM_MODE 12 NUM_LEVEL  2
+
+                # update embedding, which is used in the next layer
+                # only update the embedding of the last step, i.e. the goal
+                ep_offset_embed = reference_trajs.detach()
+                ep_ego_embed = self.trajectory_coordinate_transform_trt(
+                    reference_trajs[:,:,None, ...],
+                    track_bbox_results,
+                    with_translation_transform=True,
+                    with_rotation_transform=False)[:,:,0, ...].detach()
+                ep_agent_embed = self.trajectory_coordinate_transform_trt(
+                    reference_trajs[:,:,None, ...],
+                    track_bbox_results,
+                    with_translation_transform=False,
+                    with_rotation_transform=True)[:,:,0, ...].detach()
+
+                agent_level_embedding = agent_level_embedding_layer(pos2posemb2d(
+                    norm_points(ep_agent_embed[..., -1, :], self.pc_range)))
+                scene_level_ego_embedding = scene_level_ego_embedding_layer(pos2posemb2d(
+                    norm_points(ep_ego_embed[..., -1, :], self.pc_range)))
+                scene_level_offset_embedding = scene_level_offset_embedding_layer(pos2posemb2d(
+                    norm_points(ep_offset_embed[..., -1, :], self.pc_range)))
+
+                intermediate.append(query_embed)
+                intermediate_reference_trajs.append(reference_trajs)
+
+        return torch.stack(intermediate), torch.stack(intermediate_reference_trajs)
+
+    def trajectory_coordinate_transform_trt(self, trajectory, yaw, gravity_center, with_translation_transform=True, with_rotation_transform=True):
+        """
+        Transform trajectory coordinates with respect to detected bounding boxes in the batch.
+        Args:
+            trajectory (torch.Tensor): predicted trajectory.
+            bbox_results (List[Tuple[torch.Tensor]]): A list of tuples containing the bounding box results for each image in the batch.
+            with_translate (bool, optional): Whether to perform translation transformation. Defaults to True.
+            with_rot (bool, optional): Whether to perform rotation transformation. Defaults to True.
+
+        Returns:
+            torch.Tensor: A tensor containing the transformed trajectory coordinates.
+        """
+        batch_size = 1
+        batched_trajectories = []
+        for i in range(batch_size):
+            yaw = yaw.to(trajectory.device)
+            bbox_centers = gravity_center.to(trajectory.device)
+            transformed_trajectory = trajectory[i,...]
+            if with_rotation_transform:
+                # we take negtive here, to reverse the trajectory back to ego centric coordinate
+                angle = -(yaw - 3.1415953)
+                rot_yaw = rot_2d(angle)
+                rot_yaw = rot_yaw[:,None, None,:, :] # A, 1, 1, 2, 2
+                transformed_trajectory = rearrange(transformed_trajectory, 'a g p t c -> a g p c t') # A, G, P, 12 ,2 -> # A, G, P, 2, 12
+                transformed_trajectory = torch.matmul(rot_yaw, transformed_trajectory)# -> A, G, P, 12, 2
+                transformed_trajectory = rearrange(transformed_trajectory, 'a g p c t -> a g p t c')
+            if with_translation_transform:
+                transformed_trajectory = bbox_centers[:, None, None, None, :2] + transformed_trajectory
+            batched_trajectories.append(transformed_trajectory)
+        return torch.stack(batched_trajectories)
+
+
+@TRANSFORMER_LAYER_SEQUENCE.register_module()
+class MotionTransformerDecoderTRTP(MotionTransformerDecoderTRT):
+    """Implements the decoder in DETR3D transformer.
+    Args:
+        return_intermediate (bool): Whether to return intermediate outputs.
+        coder_norm_cfg (dict): Config of last normalization layer. Default：
+            `LN`.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward_trt(self,
+                track_query,
+                lane_query,
+                track_query_pos=None,
+                lane_query_pos=None,
+                track_boxes_1=None,
+                track_boxes_2=None,
+                gravity_center=None,
+                yaw=None,
+                bev_embed=None,
+                reference_trajs=None,
+                traj_reg_branches=None,
+                agent_level_embedding=None,
+                scene_level_ego_embedding=None,
+                scene_level_offset_embedding=None,
+                learnable_embed=None,
+                agent_level_embedding_layer=None,
+                scene_level_ego_embedding_layer=None,
+                scene_level_offset_embedding_layer=None,
+                **kwargs):
+        """Forward function for `MotionTransformerDecoder`.
+        Args:
+            agent_query (B, A, D)
+            map_query (B, M, D)
+            map_query_pos (B, G, D)
+            static_intention_embed (B, A, P, D)
+            offset_query_embed (B, A, P, D)
+            global_intention_embed (B, A, P, D)
+            learnable_intention_embed (B, A, P, D)
+            det_query_pos (B, A, D)
+        Returns:
+            None
+        """
+        intermediate = []
+        intermediate_reference_trajs = []
+
+        _, _, P, _ = agent_level_embedding.shape
+        track_query_bc = track_query[:,:,None, ...].expand(-1, -1, P, -1)  # (B, A, P, D)
+        track_query_pos_bc = track_query_pos[:,:,None, ...].expand(-1, -1, P, -1)  # (B, A, P, D)
+
+        # static intention embedding, which is imutable throughout all layers
+        agent_level_embedding = self.intention_interaction_layers(agent_level_embedding)
+        static_intention_embed = agent_level_embedding + scene_level_offset_embedding + learnable_embed
+        reference_trajs_input = reference_trajs[:,:,:,:,None, ...].detach()
+
+        query_embed = torch.zeros_like(static_intention_embed)
+        for lid in range(self.num_layers):
+            # fuse static and dynamic intention embedding
+            # the dynamic intention embedding is the output of the previous layer, which is initialized with anchor embedding
+            dynamic_query_embed = self.dynamic_embed_fuser(torch.cat(
+                [agent_level_embedding, scene_level_offset_embedding, scene_level_ego_embedding], dim=-1))
+
+            # fuse static and dynamic intention embedding
+            query_embed_intention = self.static_dynamic_fuser(torch.cat(
+                [static_intention_embed, dynamic_query_embed], dim=-1))  # (B, A, P, D)
+
+            # fuse intention embedding with query embedding
+            query_embed = self.in_query_fuser(torch.cat([query_embed, query_embed_intention], dim=-1))
+
+            # interaction between agents
+            track_query_embed = self.track_agent_interaction_layers[lid](
+                query_embed, track_query, query_pos=track_query_pos_bc, key_pos=track_query_pos)
+
+            # interaction between agents and map
+            map_query_embed = self.map_interaction_layers[lid](
+                query_embed, lane_query, query_pos=track_query_pos_bc, key_pos=lane_query_pos)
+
+            # interaction between agents and bev, ie. interaction between agents and goals
+            # implemented with deformable transformer
+            bev_query_embed = self.bev_interaction_layers[lid].forward_trt(
+                query_embed,
+                value=bev_embed,
+                query_pos=track_query_pos_bc,
+                track_boxes_1=track_boxes_1,
+                track_boxes_2=track_boxes_2,
+                gravity_center=gravity_center,
+                yaw=yaw,
+                reference_trajs=reference_trajs_input,
+                **kwargs)
+
+            query_embed = [track_query_embed, map_query_embed, bev_query_embed, track_query_bc+track_query_pos_bc]
+            query_embed = torch.cat(query_embed, dim=-1)
+            query_embed = self.out_query_fuser(query_embed)
+            if traj_reg_branches is not None:
+                # update reference trajectory
+                tmp = traj_reg_branches[lid](query_embed)
+                bs, n_agent, n_modes, n_steps, _ = reference_trajs.shape
+                last_dim = tmp.numel()//(bs*n_agent*n_modes*n_steps)
+                tmp = tmp.view(bs, n_agent, n_modes, n_steps, last_dim)
+
+                # we predict speed of trajectory and use cumsum trick to get the trajectory
+                tmp[..., :2] = torch.cumsum(tmp[..., :2], dim=3)
+                new_reference_trajs = torch.zeros_like(reference_trajs)
+                new_reference_trajs = tmp[..., :2]
+                reference_trajs = new_reference_trajs.detach()
+                reference_trajs_input = reference_trajs[:,:,:,:,None,...]  # BS NUM_AGENT NUM_MODE 12 NUM_LEVEL  2
+
+                # update embedding, which is used in the next layer
+                # only update the embedding of the last step, i.e. the goal
+                ep_offset_embed = reference_trajs.detach()
+                ep_ego_embed = self.trajectory_coordinate_transform_trt(
+                    reference_trajs[:,:,None,...],
+                    yaw,
+                    gravity_center,
+                    with_translation_transform=True,
+                    with_rotation_transform=False)[:,:,0,...].detach()
+                ep_agent_embed = self.trajectory_coordinate_transform_trt(
+                    reference_trajs[:,:,None,...],
+                    yaw,
+                    gravity_center,
+                    with_translation_transform=False,
+                    with_rotation_transform=True)[:,:,0,...].detach()
 
                 agent_level_embedding = agent_level_embedding_layer(pos2posemb2d(
                     norm_points(ep_agent_embed[..., -1, :], self.pc_range)))

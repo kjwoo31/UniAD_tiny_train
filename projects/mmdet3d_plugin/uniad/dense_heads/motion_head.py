@@ -12,13 +12,14 @@ from projects.mmdet3d_plugin.models.utils.functional import (
     bivariate_gaussian_activation,
     norm_points,
     pos2posemb2d,
-    anchor_coordinate_transform
+    anchor_coordinate_transform,
+    rot_2d
 )
 from .motion_head_plugin.motion_utils import nonlinear_smoother
 from .motion_head_plugin.base_motion_head import BaseMotionHead
+from einops import rearrange
 
-
-@HEADS.register_module(force=True)
+@HEADS.register_module()
 class MotionHead(BaseMotionHead):
     """
     MotionHead module for a neural network, which predicts motion trajectories and is used in an autonomous driving task.
@@ -558,3 +559,518 @@ class MotionHead(BaseMotionHead):
                 preds['traj_scores' + subfix] = traj_scores
             ret_list.append(preds)
         return ret_list
+
+
+@HEADS.register_module()
+class MotionHeadTRT(MotionHead):
+    """
+    MotionHead module for a neural network, which predicts motion trajectories and is used in an autonomous driving task.
+
+    Args:
+        *args: Variable length argument list.
+        predict_steps (int): The number of steps to predict motion trajectories.
+        transformerlayers (dict): A dictionary defining the configuration of transformer layers.
+        bbox_coder: An instance of a bbox coder to be used for encoding/decoding boxes.
+        num_cls_fcs (int): The number of fully-connected layers in the classification branch.
+        bev_h (int): The height of the bird's-eye-view map.
+        bev_w (int): The width of the bird's-eye-view map.
+        embed_dims (int): The number of dimensions to use for the query and key vectors in transformer layers.
+        num_anchor (int): The number of anchor points.
+        det_layer_num (int): The number of layers in the transformer model.
+        group_id_list (list): A list of group IDs to use for grouping the classes.
+        pc_range: The range of the point cloud.
+        use_nonlinear_optimizer (bool): A boolean indicating whether to use a non-linear optimizer for training.
+        anchor_info_path (str): The path to the file containing the anchor information.
+        vehicle_id_list(list[int]): class id of vehicle class, used for filtering out non-vehicle objects
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward_test_trt(self,
+                         bev_embed,
+                         track_query_embeddings,
+                         track_boxes_0,
+                         track_boxes_1,
+                         track_boxes_2,
+                         track_boxes_3,
+                         gravity_center,
+                         yaw,
+                         sdc_embedding,
+                         sdc_track_boxes_0,
+                         sdc_track_boxes_1,
+                         sdc_track_boxes_2,
+                         sdc_track_boxes_3,
+                         lane_query,
+                         lane_query_pos):
+        """Test function"""
+        track_query = track_query_embeddings[None, None, ...]
+
+        track_query = torch.cat([track_query,
+                                 sdc_embedding[None, None, None, :]],
+                                 dim=2)
+
+        track_boxes_0 = torch.cat([track_boxes_0,
+                                   sdc_track_boxes_0], dim=0)
+        track_boxes_1 = torch.cat([track_boxes_1,
+                                   sdc_track_boxes_1], dim=0)
+        track_boxes_2 = torch.cat([track_boxes_2,
+                                   sdc_track_boxes_2], dim=0)
+        track_boxes_3 = torch.cat([track_boxes_3,
+                                   sdc_track_boxes_3], dim=0)
+        track_boxes = (track_boxes_0,
+                       track_boxes_1,
+                       track_boxes_2,
+                       track_boxes_3,
+                       gravity_center,
+                       yaw,
+                       )
+        outputs_traj_scores,\
+        outputs_trajs,\
+        valid_traj_masks,\
+        inter_states,\
+        out_track_query,\
+        track_query_pos = self.forward_trt(bev_embed, track_query,
+                                           lane_query, lane_query_pos,
+                                           track_boxes)
+
+        scores, labels = track_boxes_1, track_boxes_2
+        track_scores = scores[None, :]
+        labels[-1] = 0
+        def filter_vehicle_query(inter_states,
+                                 out_track_query,
+                                 track_query_pos,
+                                 track_scores,
+                                 labels,
+                                 vehicle_id_list):
+            if len(labels) < 1:  # No other obj query except sdc query.
+                return None
+
+            # select vehicle query according to vehicle_id_list
+            vehicle_mask = torch.zeros_like(labels)
+            for veh_id in vehicle_id_list:
+                vehicle_mask = (vehicle_mask + (labels == veh_id).float()).bool().int()
+
+            inter_states = inter_states[:, :, vehicle_mask>0]
+            out_track_query = out_track_query[:, vehicle_mask>0]
+            track_query_pos = track_query_pos[:, vehicle_mask>0]
+            track_scores = track_scores[:, vehicle_mask>0]
+
+            return (inter_states,
+                    out_track_query,
+                    track_query_pos,
+                    track_scores,)
+
+        inter_states, \
+        out_track_query,\
+        track_query_pos,\
+        track_scores = filter_vehicle_query(
+            inter_states,
+            out_track_query,
+            track_query_pos,
+            track_scores,
+            labels,
+            self.vehicle_id_list)
+
+        # filter sdc query
+        sdc_traj_query = inter_states[:, :, -1]
+        sdc_track_query = out_track_query[:, -1]
+        sdc_track_query_pos = track_query_pos[:, -1]
+        inter_states = inter_states[:, :, :-1]
+        out_track_query = out_track_query[:, :-1]
+        track_query_pos = track_query_pos[:, :-1]
+        track_scores = track_scores[:, :-1]
+
+        return (
+            outputs_traj_scores,
+            outputs_trajs,
+            valid_traj_masks,
+            inter_states,
+            out_track_query,
+            track_query_pos,
+            sdc_traj_query,
+            sdc_track_query,
+            sdc_track_query_pos,
+            track_scores,
+        )
+
+    @auto_fp16(apply_to=('bev_embed', 'track_query', 'lane_query', 'lane_query_pos', 'lane_query_embed', 'prev_bev'))
+    def forward_trt(self,
+                bev_embed,
+                track_query,
+                lane_query,
+                lane_query_pos,
+                track_boxes_1,
+                track_boxes_2,
+                gravity_center,
+                yaw,):
+        """
+        Applies forward pass on the model for motion prediction using bird's eye view (BEV) embedding, track query, lane query, and track bounding box results.
+
+        Args:
+        bev_embed (torch.Tensor): A tensor of shape (h*w, B, D) representing the bird's eye view embedding.
+        track_query (torch.Tensor): A tensor of shape (B, num_dec, A_track, D) representing the track query.
+        lane_query (torch.Tensor): A tensor of shape (N, M_thing, D) representing the lane query.
+        lane_query_pos (torch.Tensor): A tensor of shape (N, M_thing, D) representing the position of the lane query.
+        track_bbox_results (List[torch.Tensor]): A list of tensors containing the tracking bounding box results for each image in the batch.
+
+        Returns:
+        dict: A dictionary containing the following keys and values:
+        - 'all_traj_scores': A tensor of shape (num_levels, B, A_track, num_points) with trajectory scores for each level.
+        - 'all_traj_preds': A tensor of shape (num_levels, B, A_track, num_points, num_future_steps, 2) with predicted trajectories for each level.
+        - 'valid_traj_masks': A tensor of shape (B, A_track) indicating the validity of trajectory masks.
+        - 'traj_query': A tensor containing intermediate states of the trajectory queries.
+        - 'track_query': A tensor containing the input track queries.
+        - 'track_query_pos': A tensor containing the positional embeddings of the track queries.
+        """
+
+        dtype = track_query.dtype
+        device = track_query.device
+        num_groups = self.kmeans_anchors.shape[0]
+        # extract the last frame of the track query
+        track_query = track_query[:, -1]
+
+        # encode the center point of the track query
+        reference_points_track = self._extract_tracking_centers_trt(
+            gravity_center,)
+        track_query_pos = self.boxes_query_embedding_layer(
+            pos2posemb2d(reference_points_track.to(device)))  # B, A, D
+
+
+        # construct the learnable query positional embedding
+        # split and stack according to groups
+        learnable_query_pos = self.learnable_motion_query_embedding.weight.to(dtype)  # latent anchor (P*G, D)
+        learnable_query_pos = torch.stack(torch.split(learnable_query_pos, self.num_anchor, dim=0))
+
+        # construct the agent level/scene-level query positional embedding
+        # (num_groups, num_anchor, 12, 2)
+        # to incorporate the information of different groups and coordinates, and embed the headding and location information
+        agent_level_anchors = self.kmeans_anchors.to(dtype).to(device).view(
+            num_groups, self.num_anchor, self.predict_steps, 2).detach()
+        scene_level_ego_anchors = self.anchor_coordinate_transform_trt(
+            agent_level_anchors,
+            yaw,
+            gravity_center,
+            with_translation_transform=True)  # B, A, G, P ,12 ,2
+        scene_level_offset_anchors = self.anchor_coordinate_transform_trt(
+            agent_level_anchors,
+            yaw,
+            gravity_center,
+            with_translation_transform=False)  # B, A, G, P ,12 ,2
+
+        agent_level_norm = norm_points(agent_level_anchors, self.pc_range)
+        scene_level_ego_norm = norm_points(scene_level_ego_anchors, self.pc_range)
+        scene_level_offset_norm = norm_points(scene_level_offset_anchors, self.pc_range)
+
+        # we only use the last point of the anchor
+        agent_level_embedding = self.agent_level_embedding_layer(
+            pos2posemb2d(agent_level_norm[..., -1, :]))  # G, P, D
+        scene_level_ego_embedding = self.scene_level_ego_embedding_layer(
+            pos2posemb2d(scene_level_ego_norm[..., -1, :]))  # B, A, G, P , D
+        scene_level_offset_embedding = self.scene_level_offset_embedding_layer(
+            pos2posemb2d(scene_level_offset_norm[..., -1, :]))  # B, A, G, P , D
+
+        batch_size, num_agents = scene_level_ego_embedding.shape[:2]
+        agent_level_embedding = agent_level_embedding[None,None, ...].expand(
+            batch_size, num_agents, -1, -1, -1)
+        learnable_embed = learnable_query_pos[None, None, ...].expand(
+            batch_size, num_agents, -1, -1, -1)
+
+
+        # save for latter, anchors
+        # B, A, G, P ,12 ,2 -> B, A, P ,12 ,2
+        scene_level_offset_anchors = self.group_mode_query_pos_trt(
+            track_boxes_2, scene_level_offset_anchors)
+
+        # select class embedding
+        # B, A, G, P , D-> B, A, P , D
+        agent_level_embedding = self.group_mode_query_pos_trt(
+            track_boxes_2,  agent_level_embedding)
+        scene_level_ego_embedding = self.group_mode_query_pos_trt(
+            track_boxes_2,  scene_level_ego_embedding)  # B, A, G, P , D-> B, A, P , D
+
+        # B, A, G, P , D -> B, A, P , D
+        scene_level_offset_embedding = self.group_mode_query_pos_trt(
+            track_boxes_2,  scene_level_offset_embedding)
+        learnable_embed = self.group_mode_query_pos_trt(
+            track_boxes_2,  learnable_embed)
+
+        init_reference = scene_level_offset_anchors.detach()
+
+        outputs_traj_scores = []
+        outputs_trajs = []
+
+        inter_states, _ = self.motionformer.forward_trt(
+            track_query,  # B, A_track, D
+            lane_query,  # B, M, D
+            track_query_pos=track_query_pos,
+            lane_query_pos=lane_query_pos,
+            track_boxes_1=track_boxes_1,
+            track_boxes_2=track_boxes_2,
+            gravity_center=gravity_center,
+            yaw=yaw,
+            bev_embed=bev_embed,
+            reference_trajs=init_reference,
+            traj_reg_branches=self.traj_reg_branches,
+            traj_cls_branches=self.traj_cls_branches,
+            # anchor embeddings
+            agent_level_embedding=agent_level_embedding,
+            scene_level_ego_embedding=scene_level_ego_embedding,
+            scene_level_offset_embedding=scene_level_offset_embedding,
+            learnable_embed=learnable_embed,
+            # anchor positional embeddings layers
+            agent_level_embedding_layer=self.agent_level_embedding_layer,
+            scene_level_ego_embedding_layer=self.scene_level_ego_embedding_layer,
+            scene_level_offset_embedding_layer=self.scene_level_offset_embedding_layer,
+            spatial_shapes=torch.tensor(
+                [[self.bev_h, self.bev_w]], device=device),
+            level_start_index=torch.tensor([0], device=device))
+
+        for lvl in range(inter_states.shape[0]): # inter_states shape [3, 1, x, 6, 256]
+            outputs_class = self.traj_cls_branches[lvl](inter_states[lvl])
+            tmp = self.traj_reg_branches[lvl](inter_states[lvl])
+            tmp = self.unflatten_traj(tmp)
+
+            # we use cumsum trick here to get the trajectory
+            tmp[..., :2] = torch.cumsum(tmp[..., :2], dim=3)
+
+            outputs_class = self.log_softmax(outputs_class[:,:,:,0,...])
+            outputs_traj_scores.append(outputs_class)
+
+            for bs in range(tmp.shape[0]):
+                tmp[bs] = bivariate_gaussian_activation(tmp[bs])
+            outputs_trajs.append(tmp)
+        outputs_traj_scores = torch.stack(outputs_traj_scores)
+        outputs_trajs = torch.stack(outputs_trajs)
+
+        B, A_track, D = track_query.shape
+        valid_traj_masks = track_query.new_ones((B, A_track)) > 0
+        outs = (outputs_traj_scores,
+                outputs_trajs,
+                valid_traj_masks.float(),
+                inter_states,
+                track_query,
+                track_query_pos,)
+
+        return outs
+
+    def anchor_coordinate_transform_trt(self, anchors, yaw, gravity_center, with_translation_transform=True, with_rotation_transform=True):
+        """
+        Transform anchor coordinates with respect to detected bounding boxes in the batch.
+
+        Args:
+            anchors (torch.Tensor): A tensor containing the k-means anchor values.
+            bbox_results (List[Tuple[torch.Tensor]]): A list of tuples containing the bounding box results for each image in the batch.
+            with_translate (bool, optional): Whether to perform translation transformation. Defaults to True.
+            with_rot (bool, optional): Whether to perform rotation transformation. Defaults to True.
+
+        Returns:
+            torch.Tensor: A tensor containing the transformed anchor coordinates.
+        """
+        batch_size = 1
+        batched_anchors = []
+        transformed_anchors = anchors[None, ...] # expand num agents: num_groups, num_modes, 12, 2 -> 1, ...
+        for i in range(batch_size):
+            yaw = yaw.to(transformed_anchors.device)
+            bbox_centers = gravity_center.to(transformed_anchors.device)
+            if with_rotation_transform:
+                angle = yaw - 3.1415953 # num_agents, 1
+                rot_yaw = rot_2d(angle) # num_agents, 2, 2
+                rot_yaw = rot_yaw[:, None, None,:, :] # num_agents, 1, 1, 2, 2
+                transformed_anchors = rearrange(transformed_anchors, 'b g m t c -> b g m c t')  # 1, num_groups, num_modes, 12, 2 -> 1, num_groups, num_modes, 2, 12
+                transformed_anchors = torch.matmul(rot_yaw, transformed_anchors)# -> num_agents, num_groups, num_modes, 12, 2
+                transformed_anchors = rearrange(transformed_anchors, 'b g m c t -> b g m t c')
+            if with_translation_transform:
+                transformed_anchors = bbox_centers[:, None, None, None, :2] + transformed_anchors
+            batched_anchors.append(transformed_anchors)
+        return torch.stack(batched_anchors)
+
+    def _extract_tracking_centers_trt(self, gravity_center):
+        """
+        extract the bboxes centers and normized according to the bev range
+
+        Args:
+            bbox_results (List[Tuple[torch.Tensor]]): A list of tuples containing the bounding box results for each image in the batch.
+            # bev_range (List[float]): A list of float values representing the bird's eye view range.
+
+        Returns:
+            torch.Tensor: A tensor representing normized centers of the detection bounding boxes.
+        """
+        batch_size = 1
+        bev_range = self.pc_range
+        det_bbox_posembed = []
+        for i in range(batch_size):
+            xy = gravity_center[:, :2]
+            x_norm = (xy[:, 0] - bev_range[0]) / \
+                (bev_range[3] - bev_range[0])
+            y_norm = (xy[:, 1] - bev_range[1]) / \
+                (bev_range[4] - bev_range[1])
+            det_bbox_posembed.append(
+                torch.cat([x_norm[:, None], y_norm[:, None]], dim=-1))
+        return torch.stack(det_bbox_posembed)
+
+    def group_mode_query_pos_trt(self, labels, mode_query_pos):
+        """
+        Group mode query positions based on the input bounding box results.
+
+        Args:
+            bbox_results (List[Tuple[torch.Tensor]]): A list of tuples containing the bounding box results for each image in the batch.
+            mode_query_pos (torch.Tensor): A tensor of shape (B, A, G, P, D) representing the mode query positions.
+
+        Returns:
+            torch.Tensor: A tensor of shape (B, A, P, D) representing the classified mode query positions.
+        """
+        batched_mode_query_pos = []
+        self.cls2group = self.cls2group.to(mode_query_pos.device)
+        label = labels.to(mode_query_pos.device)
+        grouped_label = self.cls2group[label]
+        grouped_mode_query_pos = for_loop_agent_num_vec(mode_query_pos, grouped_label)
+        batched_mode_query_pos.append(grouped_mode_query_pos)
+        return torch.stack(batched_mode_query_pos)
+
+@torch.jit.script
+def for_loop_agent_num(mode_query_pos, grouped_label):
+    agent_num = mode_query_pos.shape[1]
+    grouped_mode_query_pos = []
+    for j in range(agent_num):
+        grouped_mode_query_pos.append(
+            mode_query_pos[0, j, grouped_label[j]])
+    return torch.stack(grouped_mode_query_pos)
+
+def for_loop_agent_num_vec(mode_query_pos, grouped_label):
+    # Get the number of agents from the second dimension of mode_query_pos
+    agent_num = mode_query_pos.shape[1]
+
+    # Prepare indices for batched indexing
+    # Create a range tensor for the first dimension
+    first_dim_indices = torch.zeros(agent_num, dtype=torch.int64)
+
+    # Use the grouped_label for the third dimension
+    third_dim_indices = grouped_label
+
+    # Perform advanced indexing to gather the elements
+    grouped_mode_query_pos = mode_query_pos[first_dim_indices, torch.arange(agent_num), third_dim_indices]
+
+    return grouped_mode_query_pos
+
+@HEADS.register_module()
+class MotionHeadTRTP(MotionHeadTRT):
+    """
+    MotionHead module for a neural network, which predicts motion trajectories and is used in an autonomous driving task.
+
+    Args:
+        *args: Variable length argument list.
+        predict_steps (int): The number of steps to predict motion trajectories.
+        transformerlayers (dict): A dictionary defining the configuration of transformer layers.
+        bbox_coder: An instance of a bbox coder to be used for encoding/decoding boxes.
+        num_cls_fcs (int): The number of fully-connected layers in the classification branch.
+        bev_h (int): The height of the bird's-eye-view map.
+        bev_w (int): The width of the bird's-eye-view map.
+        embed_dims (int): The number of dimensions to use for the query and key vectors in transformer layers.
+        num_anchor (int): The number of anchor points.
+        det_layer_num (int): The number of layers in the transformer model.
+        group_id_list (list): A list of group IDs to use for grouping the classes.
+        pc_range: The range of the point cloud.
+        use_nonlinear_optimizer (bool): A boolean indicating whether to use a non-linear optimizer for training.
+        anchor_info_path (str): The path to the file containing the anchor information.
+        vehicle_id_list(list[int]): class id of vehicle class, used for filtering out non-vehicle objects
+    """
+    def __init__(self, *args, **kwargs):
+        super(MotionHeadTRTP, self).__init__(*args, **kwargs)
+
+    def forward_test_trt(self,
+                         bev_embed,
+                         track_query_embeddings,
+                         track_boxes_1,
+                         track_boxes_2,
+                         gravity_center,
+                         yaw,
+                         sdc_embedding,
+                         sdc_gravity_center,
+                         sdc_yaw,
+                         sdc_track_boxes_1,
+                         sdc_track_boxes_2,
+                         lane_query,
+                         lane_query_pos):
+        """Test function"""
+        track_query = track_query_embeddings[None, None, ...]
+        track_query = torch.cat([track_query,
+                                 sdc_embedding[None, None, None, :]],
+                                 dim=2)
+        gravity_center = torch.cat([gravity_center,
+                                   sdc_gravity_center], dim=0)
+        yaw = torch.cat([yaw,
+                        sdc_yaw], dim=0)
+        track_boxes_1 = torch.cat([track_boxes_1,
+                                   sdc_track_boxes_1], dim=0)
+        track_boxes_2 = torch.cat([track_boxes_2,
+                                   sdc_track_boxes_2], dim=0)
+
+        outputs_traj_scores,\
+        outputs_trajs,\
+        valid_traj_masks,\
+        inter_states,\
+        out_track_query,\
+        track_query_pos = self.forward_trt(bev_embed,
+                                           track_query,
+                                           lane_query,
+                                           lane_query_pos,
+                                           track_boxes_1,
+                                           track_boxes_2,
+                                           gravity_center,
+                                           yaw,)
+
+        scores, labels = track_boxes_1, track_boxes_2
+        track_scores = scores[None, :]
+        labels[-1] = 0
+
+        inter_states, \
+        out_track_query,\
+        track_query_pos,\
+        track_scores = self.filter_vehicle_query_trt(
+            inter_states,
+            out_track_query,
+            track_query_pos,
+            track_scores,
+            labels,
+            self.vehicle_id_list)
+
+        # filter sdc query
+        sdc_traj_query = inter_states[:, :, -1]
+        sdc_track_query = out_track_query[:, -1]
+        sdc_track_query_pos = track_query_pos[:, -1]
+        inter_states = inter_states[:, :, :-1]
+        out_track_query = out_track_query[:, :-1]
+        track_query_pos = track_query_pos[:, :-1]
+        track_scores = track_scores[:, :-1]
+
+        return (
+            outputs_traj_scores,
+            outputs_trajs,
+            valid_traj_masks,
+            inter_states,
+            out_track_query,
+            track_query_pos,
+            sdc_traj_query,
+            sdc_track_query,
+            sdc_track_query_pos,
+            track_scores,
+        )
+
+    def filter_vehicle_query_trt(self,
+                                 inter_states,
+                                 out_track_query,
+                                 track_query_pos,
+                                 track_scores,
+                                 labels,
+                                 vehicle_id_list):
+            vehicle_mask = torch.zeros_like(labels)
+            for veh_id in vehicle_id_list:
+                vehicle_mask =  (vehicle_mask + (labels == veh_id).float()).bool().int()
+            inter_states = inter_states[:, :, vehicle_mask>0]
+            out_track_query = out_track_query[:, vehicle_mask>0]
+            track_query_pos = track_query_pos[:, vehicle_mask>0]
+            track_scores = track_scores[:, vehicle_mask>0]
+            return (inter_states,
+                    out_track_query,
+                    track_query_pos,
+                    track_scores,)

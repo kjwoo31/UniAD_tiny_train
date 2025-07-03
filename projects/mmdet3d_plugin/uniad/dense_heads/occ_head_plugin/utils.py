@@ -67,6 +67,36 @@ def make_instance_seg_consecutive(instance_seg):
     instance_seg = update_instance_ids(instance_seg, unique_ids, new_ids)
     return instance_seg
 
+# def custom_unique_v2(x):
+#     x=x.flatten()
+#     unique_elements = torch.Tensor([]).to(x.device)
+#     seen = set()
+
+#     for element in x:
+#         if element not in seen:
+#             seen.add(element)
+#             unique_elements = torch.cat((unique_elements, torch.Tensor([element]).to(x.device)))
+
+#     return unique_elements.sort()[0]
+
+# def custom_unique_v1(instance_seg):
+#     instance_seg = instance_seg.flatten()
+#     sorted_tensor, _ = instance_seg.sort()
+#     # Find unique elements by comparing adjacent elements and removing duplicates
+#     unique_mask = sorted_tensor[:-1] != sorted_tensor[1:]
+#     unique_mask = torch.cat([unique_mask, torch.tensor([1], device=instance_seg.device)], dim=0).bool()
+#     # Gather the unique elements using the unique_mask
+#     unique_elements = sorted_tensor[unique_mask]
+
+#     return unique_elements
+
+
+# def make_instance_seg_consecutive_trt(instance_seg):
+#     unique_ids1 = custom_unique_v1(instance_seg)
+#     new_ids = torch.arange(len(unique_ids), device=instance_seg.device)
+#     instance_seg = update_instance_ids(instance_seg, unique_ids, new_ids)
+#     return instance_seg
+
 
 def predict_instance_segmentation_and_trajectories(
                                     foreground_masks,
@@ -85,3 +115,21 @@ def predict_instance_segmentation_and_trajectories(
     instance_seg = make_instance_seg_consecutive(instance_seg).long()
 
     return instance_seg
+
+# def predict_instance_segmentation_and_trajectories_trt(
+#                                     foreground_masks,
+#                                     ins_sigmoid,
+#                                     vehicles_id=1,
+#                                     ):
+#     if foreground_masks.dim() == 5 and foreground_masks.shape[2] == 1:
+#         foreground_masks = foreground_masks[:,:,0,...]  # [b, t, h, w]
+#     foreground_masks = foreground_masks == vehicles_id  # [b, t, h, w]  Only these places have foreground id
+
+#     argmax_ins = ins_sigmoid.argmax(dim=1)  # long, [b, t, h, w], ins_id starts from 0
+#     argmax_ins = argmax_ins + 1 # [b, t, h, w], ins_id starts from 1
+#     instance_seg = (argmax_ins * foreground_masks.float()).long()  # bg is 0, fg starts with 1
+
+#     # Make the indices of instance_seg consecutive
+#     instance_seg = make_instance_seg_consecutive_trt(instance_seg).long()
+
+#     return instance_seg

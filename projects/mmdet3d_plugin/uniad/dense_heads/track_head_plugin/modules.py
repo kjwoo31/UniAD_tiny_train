@@ -3,6 +3,18 @@ import torch.nn.functional as F
 from torch import nn
 from .track_instance import Instances
 
+def index_bool2long_trt(bool_index):
+    # Convert Boolean Tensor to Long Tensor:
+    long_index = bool_index.long()
+    # Create a Range Tensor and Multiply by the Long Tensor
+    long_index = torch.arange(1, long_index.shape[-1]+1
+                                        , device=long_index.device)*long_index
+    # Extract Non-Zero Indices
+    long_index = long_index[long_index.nonzero(as_tuple=True)[0]]
+    # Adjust Indices to Be Zero-Based
+    long_index = long_index - torch.ones_like(long_index)
+    return long_index
+
 # MemoryBank
 class MemoryBank(nn.Module):
 
@@ -88,6 +100,77 @@ class MemoryBank(nn.Module):
             self.update(track_instances)
         return track_instances
 
+
+# MemoryBankTRTP
+class MemoryBankTRTP(MemoryBank):
+
+    def __init__(self,
+                 args,
+                 dim_in, hidden_dim, dim_out,
+                 ):
+        super(MemoryBank, self).__init__()
+        self._build_layers(args, dim_in, hidden_dim, dim_out)
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def _build_layers(self, args, dim_in, hidden_dim, dim_out):
+        self.save_thresh = args['memory_bank_score_thresh']
+        self.save_period = 3
+        self.max_his_length = args['memory_bank_len']
+
+        self.save_proj = nn.Linear(dim_in, dim_in)
+
+        self.temporal_attn = nn.MultiheadAttention(dim_in, 8, dropout=0)
+        self.temporal_fc1 = nn.Linear(dim_in, hidden_dim)
+        self.temporal_fc2 = nn.Linear(hidden_dim, dim_in)
+        self.temporal_norm1 = nn.LayerNorm(dim_in)
+        self.temporal_norm2 = nn.LayerNorm(dim_in)
+
+    def update_trt(self, output_embedding, scores, mem_padding_mask, save_period, mem_bank):
+        embed = output_embedding[:, None]  #( N, 1, 256)
+        saved_idxes = index_bool2long_trt((save_period == 0) & (scores > self.save_thresh))
+        save_period[index_bool2long_trt(save_period > 0)] = \
+            save_period[index_bool2long_trt(save_period > 0)] - torch.ones_like(save_period[index_bool2long_trt(save_period > 0)])
+        save_period[saved_idxes] = torch.ones_like(save_period[saved_idxes])*self.save_period
+
+        saved_embed = embed[saved_idxes]
+        prev_embed = mem_bank[saved_idxes]
+        save_embed = self.save_proj(saved_embed)
+        mem_padding_mask[saved_idxes] = torch.cat([mem_padding_mask[saved_idxes, 1:],
+                                                   torch.zeros((mem_padding_mask[saved_idxes, 1:].shape[0], 1),
+                                                               dtype=torch.int, device=embed.device)], dim=1)
+        mem_bank = mem_bank.clone()
+        mem_bank[saved_idxes] = torch.cat([prev_embed[:, 1:], save_embed], dim=1)
+        return mem_padding_mask, save_period, mem_bank
+
+    def _forward_temporal_attn_trt(self, mem_padding_mask, output_embedding, mem_bank):
+
+        key_padding_mask = mem_padding_mask
+
+        valid_idxes = index_bool2long_trt(key_padding_mask[:, -1] == 0)
+        embed = output_embedding[valid_idxes]  # (n, 256)
+        prev_embed = mem_bank[valid_idxes]
+        key_padding_mask = key_padding_mask[valid_idxes]
+        embed2 = self.temporal_attn(
+            embed[None],
+            prev_embed.transpose(0, 1),
+            prev_embed.transpose(0, 1),
+            key_padding_mask=key_padding_mask.bool(), # must be bool not int/long
+        )[0][0]
+
+        embed = self.temporal_norm1(embed + embed2)
+        embed2 = self.temporal_fc2(F.relu(self.temporal_fc1(embed)))
+        embed = self.temporal_norm2(embed + embed2)
+        output_embedding = output_embedding.clone()
+        output_embedding[valid_idxes] = embed
+
+        return output_embedding
+
+    def forward_trt(self, mem_padding_mask, output_embedding, mem_bank, scores, save_period):
+        output_embedding = self._forward_temporal_attn_trt(mem_padding_mask, output_embedding, mem_bank)
+        mem_padding_mask, save_period, mem_bank = self.update_trt(output_embedding, scores, mem_padding_mask, save_period, mem_bank)
+        return output_embedding, mem_padding_mask, save_period, mem_bank
 
 # QIM
 class QueryInteractionBase(nn.Module):
@@ -251,4 +334,93 @@ class QueryInteractionModule(QueryInteractionBase):
         init_track_instances: Instances = data["init_track_instances"]
         merged_track_instances = Instances.cat(
             [init_track_instances, active_track_instances])
+        return merged_track_instances
+
+
+class QueryInteractionModuleTRTP(QueryInteractionModule):
+
+    def __init__(self, args, dim_in, hidden_dim, dim_out):
+        super(QueryInteractionModule, self).__init__(args, dim_in, hidden_dim, dim_out)
+        self.random_drop = args["random_drop"]
+        self.fp_ratio = args["fp_ratio"]
+        self.update_query_pos = args["update_query_pos"]
+
+    def _build_layers(self, args, dim_in, hidden_dim, dim_out):
+        dropout = args["merger_dropout"]
+
+        self.self_attn = nn.MultiheadAttention(dim_in, 8, dropout)
+        self.linear1 = nn.Linear(dim_in, hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(hidden_dim, dim_in)
+
+        if args["update_query_pos"]:
+            self.linear_pos1 = nn.Linear(dim_in, hidden_dim)
+            self.linear_pos2 = nn.Linear(hidden_dim, dim_in)
+            self.dropout_pos1 = nn.Dropout(dropout)
+            self.dropout_pos2 = nn.Dropout(dropout)
+            self.norm_pos = nn.LayerNorm(dim_in)
+
+        self.linear_feat1 = nn.Linear(dim_in, hidden_dim)
+        self.linear_feat2 = nn.Linear(hidden_dim, dim_in)
+        self.dropout_feat1 = nn.Dropout(dropout)
+        self.dropout_feat2 = nn.Dropout(dropout)
+        self.norm_feat = nn.LayerNorm(dim_in)
+
+        self.norm1 = nn.LayerNorm(dim_in)
+        self.norm2 = nn.LayerNorm(dim_in)
+
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.activation = F.relu
+
+    def _update_track_embedding_trt(self, track_instances):
+        dim = 512 #track_instances[0].shape[1]
+        out_embed = track_instances[2]
+        query_pos = track_instances[0][:, :dim // 2]
+        query_feat = track_instances[0][:, dim // 2:]
+        q = query_pos + out_embed
+        k = query_pos + out_embed
+
+        # attention
+        tgt = out_embed
+        tgt2 = self.self_attn(q[:, None], k[:, None], value=tgt[:, None])[0][:,
+                                                                             0]
+        tgt = tgt + self.dropout1(tgt2)
+        tgt = self.norm1(tgt)
+
+        # ffn
+        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
+        tgt = tgt + self.dropout2(tgt2)
+        tgt = self.norm2(tgt)
+
+        if self.update_query_pos:
+            query_pos2 = self.linear_pos2(
+                self.dropout_pos1(self.activation(self.linear_pos1(tgt))))
+            query_pos = query_pos + self.dropout_pos2(query_pos2)
+            query_pos = self.norm_pos(query_pos)
+            track_instances[0][:, :dim // 2] = query_pos
+
+        query_feat2 = self.linear_feat2(
+            self.dropout_feat1(self.activation(self.linear_feat1(tgt))))
+        query_feat = query_feat + self.dropout_feat2(query_feat2)
+        query_feat = self.norm_feat(query_feat)
+        track_instances[0][:, dim // 2:] = query_feat
+
+        return track_instances
+
+    def _select_active_tracks_trt(self, track_instances):
+        active_index = index_bool2long_trt(track_instances[3] >= 0)
+        active_track_instances = []
+        for item in track_instances:
+            active_track_instances.append(item[active_index])
+
+        return active_track_instances
+
+    def forward_trt(self, init_track_instances, track_instances):
+        active_track_instances = self._update_track_embedding_trt(
+            self._select_active_tracks_trt(track_instances))
+        merged_track_instances = []
+        for i in range(len(track_instances)):
+            merged_track_instances.append(torch.cat((init_track_instances[i],
+                                                     active_track_instances[i]), dim=0))
         return merged_track_instances

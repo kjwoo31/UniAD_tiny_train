@@ -99,7 +99,7 @@ occflow_grid_conf = {
 }
 evaluation_ranges = {'8x8': (17, 33), '25x25': (0, 50)}
 bevslicer=False
-upsample_if_tiny=False
+# upsample_if_tiny=False
 
 # Other settings
 train_gt_iou_threshold=0.3
@@ -168,7 +168,7 @@ model = dict(
         ),
         loss_bbox=dict(type="L1Loss", loss_weight=0.25),
     ),  # loss cfg for tracking
-    upsample_if_tiny=upsample_if_tiny,
+    # upsample_if_tiny=upsample_if_tiny,
     pts_bbox_head=dict(
         type="BEVFormerTrackHead",
         bev_h=bev_h_,

@@ -13,7 +13,7 @@ from .planning_head_plugin import CollisionNonlinearOptimizer
 import numpy as np
 import copy
 
-@HEADS.register_module(force=True)
+@HEADS.register_module()
 class PlanningHeadSingleMode(nn.Module):
     def __init__(self,
                  bev_h=200,
@@ -247,3 +247,114 @@ class PlanningHeadSingleMode(nn.Module):
         loss_ade = self.loss_planning(sdc_traj_all, sdc_planning[0, :, :self.planning_steps, :2], torch.any(sdc_planning_mask[0, :, :self.planning_steps], dim=-1))
         loss_dict.update(dict(loss_ade=loss_ade))
         return loss_dict
+
+
+@HEADS.register_module()
+class PlanningHeadSingleModeTRT(PlanningHeadSingleMode):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward_test_trt(self, bev_embed, sdc_traj_query, sdc_track_query,
+                         bev_pos, seg_out, command=None):
+        outs_planning = self.forward_trt(bev_embed, seg_out, bev_pos, sdc_traj_query, sdc_track_query, command)
+        return outs_planning
+
+    def forward_trt(self,
+                bev_embed,
+                occ_mask,
+                bev_pos,
+                sdc_traj_query,
+                sdc_track_query,
+                command):
+        """
+        Forward pass for PlanningHeadSingleMode.
+
+        Args:
+            bev_embed (torch.Tensor): Bird's eye view feature embedding.
+            occ_mask (torch.Tensor): Instance mask for occupancy.
+            bev_pos (torch.Tensor): BEV position.
+            sdc_traj_query (torch.Tensor): SDC trajectory query.
+            sdc_track_query (torch.Tensor): SDC track query.
+            command (int): Driving command.
+
+        Returns:
+            dict: A dictionary containing SDC trajectory and all SDC trajectories.
+        """
+        sdc_track_query = sdc_track_query.detach()
+        sdc_traj_query = sdc_traj_query[-1]
+        P = sdc_traj_query.shape[1]
+        sdc_track_query = sdc_track_query[:, None].expand(-1,P,-1)
+
+
+        navi_embed = self.navi_embed.weight[command]
+        navi_embed = navi_embed[None].expand(-1,P,-1)
+        plan_query = torch.cat([sdc_traj_query, sdc_track_query, navi_embed], dim=-1)
+
+        plan_query = self.mlp_fuser(plan_query).max(1, keepdim=True)[0]   # expand, then fuse  # [1, 6, 768] -> [1, 1, 256]
+        plan_query = rearrange(plan_query, 'b p c -> p b c')
+
+        bev_pos = rearrange(bev_pos, 'b c h w -> (h w) b c')
+        bev_feat = bev_embed +  bev_pos
+
+        ##### Plugin adapter #####
+        bev_feat = rearrange(bev_feat, '(h w) b c -> b c h w', h=self.bev_h, w=self.bev_w)
+        bev_feat = bev_feat + self.bev_adapter(bev_feat)  # residual connection
+        bev_feat = rearrange(bev_feat, 'b c h w -> (h w) b c')
+        ##########################
+
+        pos_embed = self.pos_embed.weight
+        plan_query = plan_query + pos_embed[None]  # [1, 1, 256]
+
+        # plan_query: [1, 1, 256]
+        # bev_feat: [40000, 1, 256]
+        plan_query = self.attn_module(plan_query, bev_feat)   # [1, 1, 256]
+
+        sdc_traj_all = self.reg_branch(plan_query).view((-1, self.planning_steps, 2))
+        sdc_traj_all[...,:2] = torch.cumsum(sdc_traj_all[...,:2], dim=1)
+        sdc_traj_all[0] = bivariate_gaussian_activation(sdc_traj_all[0])
+
+        return sdc_traj_all
+
+    # def collision_optimization_trt(self, sdc_traj_all, occ_mask):
+    #     """
+    #     Optimize SDC trajectory with occupancy instance mask.
+
+    #     Args:
+    #         sdc_traj_all (torch.Tensor): SDC trajectory tensor.
+    #         occ_mask (torch.Tensor): Occupancy flow instance mask.
+    #     Returns:
+    #         torch.Tensor: Optimized SDC trajectory tensor.
+    #     """
+    #     pos_xy_t = []
+    #     valid_occupancy_num = 0
+
+    #     if occ_mask.shape[2] == 1:
+    #         occ_mask = occ_mask[:,:,0,...]#.squeeze(2)
+    #     occ_horizon = occ_mask.shape[1]
+    #     assert occ_horizon == 5
+
+    #     for t in range(self.planning_steps):
+    #         cur_t = min(t+1, occ_horizon-1)
+    #         pos_xy = torch.nonzero(occ_mask[0][cur_t], as_tuple=False)
+    #         pos_xy = pos_xy[:, [1, 0]]
+    #         pos_xy[:, 0] = (pos_xy[:, 0] - self.bev_h//2) * 0.5 + 0.25
+    #         pos_xy[:, 1] = (pos_xy[:, 1] - self.bev_w//2) * 0.5 + 0.25
+
+    #         # filter the occupancy in range
+    #         keep_index = torch.sum((sdc_traj_all[0, t, :2][None, :] - pos_xy[:, :2])**2, axis=-1) < self.occ_filter_range**2
+    #         pos_xy_t.append(pos_xy[keep_index].cpu().detach().numpy())
+    #         valid_occupancy_num += torch.sum(keep_index>0)
+    #     if valid_occupancy_num == 0:
+    #         return sdc_traj_all
+
+    #     col_optimizer = CollisionNonlinearOptimizer(self.planning_steps, 0.5, self.sigma, self.alpha_collision, pos_xy_t)
+    #     col_optimizer.set_reference_trajectory(sdc_traj_all[0].cpu().detach().numpy())
+    #     sol = col_optimizer.solve()
+    #     sdc_traj_optim = np.stack([sol.value(col_optimizer.position_x), sol.value(col_optimizer.position_y)], axis=-1)
+    #     return torch.tensor(sdc_traj_optim[None], device=sdc_traj_all.device, dtype=sdc_traj_all.dtype)
+
+
+@HEADS.register_module()
+class PlanningHeadSingleModeTRTP(PlanningHeadSingleModeTRT):
+    def __init__(self, *args, **kwargs):
+        super(PlanningHeadSingleModeTRTP, self).__init__(*args, **kwargs)

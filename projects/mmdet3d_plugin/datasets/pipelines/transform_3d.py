@@ -3,9 +3,11 @@ from numpy import random
 import mmcv
 from mmdet.datasets.builder import PIPELINES
 from mmcv.parallel import DataContainer as DC
+# from mmdet3d.datasets.pipelines.transforms_3d import ObjectRangeFilter, ObjectNameFilter
 import sys
-sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+# sys.path.insert(1, '/path/to/UniAD_tensorrt')
 from third_party.uniad_mmdet3d.datasets.pipelines import ObjectRangeFilter, ObjectNameFilter
+# from mmdet3d.core.bbox import CameraInstance3DBoxes, DepthInstance3DBoxes, LiDARInstance3DBoxes
 from third_party.uniad_mmdet3d.core.bbox import CameraInstance3DBoxes, DepthInstance3DBoxes, LiDARInstance3DBoxes
 
 @PIPELINES.register_module(force=True)

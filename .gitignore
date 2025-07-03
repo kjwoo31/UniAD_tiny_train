@@ -152,3 +152,5 @@ debug/
 core.*
 
 nuscenes_np/
+dumped_inputs/
+onnx/

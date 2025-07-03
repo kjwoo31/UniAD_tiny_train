@@ -136,8 +136,8 @@ def custom_build_dataset(cfg, default_args=None):
     elif cfg['type'] == 'ClassBalancedDataset':
         dataset = ClassBalancedDataset(
             custom_build_dataset(cfg['dataset'], default_args), cfg['oversample_thr'])
-    elif cfg['type'] == 'CBGSDataset':
-        dataset = CBGSDataset(custom_build_dataset(cfg['dataset'], default_args))
+    # elif cfg['type'] == 'CBGSDataset':
+    #     dataset = CBGSDataset(custom_build_dataset(cfg['dataset'], default_args))
     elif isinstance(cfg.get('ann_file'), (list, tuple)):
         dataset = _concat_dataset(cfg, default_args)
     else:

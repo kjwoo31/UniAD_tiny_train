@@ -3,8 +3,9 @@ import mmcv
 from mmdet.datasets.builder import PIPELINES
 from einops import rearrange
 import sys
-sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+# sys.path.insert(1, '/path/to/UniAD_tensorrt')
 from third_party.uniad_mmdet3d.datasets.pipelines import LoadAnnotations3D
+# from mmdet3d.datasets.pipelines import LoadAnnotations3D
 import os
 
 @PIPELINES.register_module(force=True)

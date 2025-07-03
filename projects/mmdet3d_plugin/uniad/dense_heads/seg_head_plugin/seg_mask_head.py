@@ -13,7 +13,7 @@ import math
 from mmcv.runner import force_fp32
 
 count = 0
-
+fp16_enabled=False
 
 class Mlp(nn.Module):
     def __init__(self,
@@ -23,7 +23,7 @@ class Mlp(nn.Module):
                  act_layer=nn.GELU,
                  drop=0.):
         super().__init__()
-        self.fp16_enabled = False
+        self.fp16_enabled = fp16_enabled
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         self.fc1 = nn.Linear(in_features, hidden_features)
@@ -54,7 +54,7 @@ class SelfAttention(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
-        self.fp16_enabled = False
+        self.fp16_enabled = fp16_enabled
         self.scale = qk_scale or head_dim**-0.5
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -93,7 +93,7 @@ class Attention(nn.Module):
                  attn_drop=0.,
                  proj_drop=0.):
         super().__init__()
-        self.fp16_enabled = False
+        self.fp16_enabled = fp16_enabled
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = qk_scale or head_dim**-0.5
@@ -122,7 +122,6 @@ class Attention(nn.Module):
     def forward(self, query, key, value, key_padding_mask, hw_lvl):
         B, N, C = query.shape
         _, L, _ = key.shape
-        #print('query, key, value', query.shape, value.shape, key.shape)
         q = self.q(query).reshape(B, N,
                                   self.num_heads, C // self.num_heads).permute(
                                       0, 2, 1,
@@ -165,7 +164,7 @@ class AttentionTail(nn.Module):
                  attn_drop=0.,
                  proj_drop=0.):
         super().__init__()
-        self.fp16_enabled = False
+        self.fp16_enabled = fp16_enabled
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = qk_scale or head_dim**-0.5
@@ -226,7 +225,7 @@ class Block(nn.Module):
                  norm_layer=nn.LayerNorm,
                  self_attn=False):
         super().__init__()
-        self.fp16_enabled = False
+        self.fp16_enabled = fp16_enabled
         self.head_norm1 = norm_layer(dim)
         self.self_attn = self_attn
         self.attn = Attention(cfg,
@@ -306,7 +305,7 @@ class DropPath(nn.Module):
         return drop_path(x, self.drop_prob, self.training)
 
 
-@TRANSFORMER.register_module(force=True)
+@TRANSFORMER.register_module()
 class SegMaskHead(nn.Module):
     def __init__(self,
                  cfg=None,
@@ -322,7 +321,7 @@ class SegMaskHead(nn.Module):
                  self_attn=False):
         super().__init__()
 
-        self.fp16_enabled = False
+        self.fp16_enabled = fp16_enabled
         mlp_ratio = 4
         qkv_bias = True
         qk_scale = None

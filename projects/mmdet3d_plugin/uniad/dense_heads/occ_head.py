@@ -7,6 +7,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 from mmdet.models.builder import HEADS, build_loss
 from mmcv.runner import BaseModule
 from einops import rearrange
@@ -19,7 +20,7 @@ from .occ_head_plugin import MLP, BevFeatureSlicer, SimpleConv2d, CVT_Decoder, B
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
-@HEADS.register_module(force=True)
+@HEADS.register_module()
 class OccHead(BaseModule):
     def __init__(self, 
                  # General
@@ -198,9 +199,7 @@ class OccHead(BaseModule):
         return attn_mask, upsampled_mask_pred, ins_embed
 
     def forward(self, x, ins_query):
-        # base_state = rearrange(x, '(h w) b d -> b d h w', h=self.bev_size[0])
-        _, b,d=x.shape
-        base_state = x.permute(1,2,0).view(b,d,self.bev_size[0],self.bev_size[1])
+        base_state = rearrange(x, '(h w) b d -> b d h w', h=self.bev_size[0])
 
         if self.bevslicer:
             base_state = self.bev_sampler(base_state)
@@ -233,11 +232,8 @@ class OccHead(BaseModule):
             mask_preds.append(mask_pred)  # /1
             temporal_embed_for_mask_attn.append(cur_ins_emb_for_mask_attn)
 
-            # cur_state = rearrange(cur_state, 'b c h w -> (h w) b c')
-            b,c,h,w=cur_state.shape
-            cur_state = cur_state.view(b,c,h*w).permute(2,0,1)
-            # cur_ins_query = rearrange(cur_ins_query, 'b q c -> q b c')
-            cur_ins_query=cur_ins_query.permute(1,0,2)
+            cur_state = rearrange(cur_state, 'b c h w -> (h w) b c')
+            cur_ins_query = rearrange(cur_ins_query, 'b q c -> q b c')
 
             for j in range(n_trans_layer_each_block):
                 trans_layer_ind = i * n_trans_layer_each_block + j
@@ -253,10 +249,7 @@ class OccHead(BaseModule):
                     key_padding_mask=None
                 )  # out size: [h'*w', b, c]
 
-            # cur_state = rearrange(cur_state, '(h w) b c -> b c h w', h=self.bev_size[0]//8)
-            cur_state_h = int(cur_state.shape[0]**0.5)
-            _, b, c = cur_state.shape
-            cur_state = cur_state.permute(1,2,0).view(b,c,cur_state_h,cur_state_h)
+            cur_state = rearrange(cur_state, '(h w) b c -> b c h w', h=self.bev_size[0]//8)
             
             # Upscale to /4
             cur_state = self.upsample_adds[i](cur_state, last_state)
@@ -272,12 +265,6 @@ class OccHead(BaseModule):
 
         # Decode future states to larger resolution
         future_states = self.dense_decoder(future_states)
-        future_states = F.interpolate(
-                        future_states,
-                        (int(future_states.shape[-3]), int(self.bev_size[-2]), int(self.bev_size[-1])),
-                        mode='trilinear',
-                        align_corners=False
-                        )
         ins_occ_query = self.query_to_occ_feat(ins_query)    # [b, t, q, query_out_dim]
         
         # Generate final outputs
@@ -466,6 +453,7 @@ class OccHead(BaseModule):
                 predict_instance_segmentation_and_trajectories(seg_out, pred_ins_sigmoid)  # bg is 0, fg starts with 1, consecutive
             
             out_dict['ins_seg_out'] = pred_consistent_instance_seg  # [1, 5, 200, 200]
+
         return out_dict
 
     def get_ins_seg_gt(self, gt_instance):
@@ -490,3 +478,197 @@ class OccHead(BaseModule):
         gt_instance = gt_instance[:, :self.n_future+1].long()
         gt_img_is_valid = gt_img_is_valid[:, :self.receptive_field + self.n_future]
         return gt_segmentation, gt_instance, gt_img_is_valid
+
+
+def if_sum_greater_zero(query_index, attn_mask):
+    # Generate mask where query_index is 1
+    mask = query_index == 1
+    attn_mask = torch.cat((attn_mask, torch.zeros(
+        attn_mask.shape[0],
+        attn_mask.shape[1],
+        1,
+        ).to(attn_mask)), dim=2)
+
+    mask_float = mask[...,None].float()
+    attn_mask = mask_float*torch.zeros_like(attn_mask) + (1-mask_float)*attn_mask
+
+    return attn_mask[...,:-1]
+
+def if_no_query(pred_ins_sigmoid, pred_seg_scores):
+    pred_ins_sigmoid_pad = torch.cat((pred_ins_sigmoid, torch.zeros(
+                                    pred_ins_sigmoid.shape[0],
+                                    1,
+                                    pred_ins_sigmoid.shape[2],
+                                    pred_ins_sigmoid.shape[3],
+                                    pred_ins_sigmoid.shape[4],).to(pred_ins_sigmoid
+                                                                   )+pred_seg_scores), dim=1)
+    pred_seg_scores_out = pred_ins_sigmoid_pad.max(1)[0]
+
+    return pred_seg_scores_out
+
+@HEADS.register_module()
+class OccHeadTRT(OccHead):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def get_ins_seg_gt_trt(self, ins_gt_old):
+        ins_gt_new= ins_gt_old.detach().clone()
+        ins_gt_new[ins_gt_new==self.ignore_index]=0
+        # speed up the for loop
+        # TODO: implement a custom version of torch.unique, tensorRT does not support torch.unique
+        _, ins_gt_new = torch.unique(ins_gt_new, sorted=True, return_inverse=True)
+
+        return ins_gt_new  # Consecutive
+
+    def get_attn_mask_trt(self, state, ins_query):
+        # state: b, c, h, w
+        # ins_query: b, q, c
+        ins_embed = self.temporal_mlp_for_mask(
+            ins_query
+        )
+        mask_pred = torch.einsum("bqc,bchw->bqhw", ins_embed, state)
+        attn_mask = mask_pred.sigmoid() < self.attn_mask_thresh
+        attn_mask = attn_mask.float()
+        b,q,h,w = attn_mask.shape
+        attn_mask = attn_mask.view(b,q,h*w).permute(0,2,1)[:,None,...].repeat(
+            1, self.num_heads, 1, 1).reshape(b*self.num_heads, h*w, q).detach()
+        query_index = attn_mask.sum(-1) == attn_mask.shape[-1]
+        attn_mask = if_sum_greater_zero(query_index, attn_mask)
+
+        return attn_mask.bool(), ins_embed
+
+    def forward_trt(self, x, ins_query):
+        _, b,d=x.shape
+        base_state = x.permute(1,2,0).view(b,d,self.bev_size[0],self.bev_size[1])
+        if self.bevslicer:
+            base_state = self.bev_sampler(base_state)
+        base_state = self.bev_light_proj(base_state)
+        base_state = self.base_downscale(base_state)
+        base_ins_query = ins_query
+
+        last_state = base_state
+        last_ins_query = base_ins_query
+        future_states = []
+        temporal_query = []
+        temporal_embed_for_mask_attn = []
+        n_trans_layer_each_block = self.num_trans_layers // self.n_future_blocks
+        assert n_trans_layer_each_block >= 1
+
+        for i in range(self.n_future_blocks):
+            # Downscale
+            cur_state = self.downscale_convs[i](last_state)  # /4 -> /8
+
+            # Attention
+            cur_ins_query = self.temporal_mlps[i](last_ins_query)  # [b, q, d]
+            temporal_query.append(cur_ins_query)
+
+            # Generate attn mask
+            attn_mask, cur_ins_emb_for_mask_attn = self.get_attn_mask_trt(cur_state, cur_ins_query)
+            attn_masks = [None, attn_mask]
+
+            # mask_preds.append(mask_pred)  # /1
+            temporal_embed_for_mask_attn.append(cur_ins_emb_for_mask_attn)
+
+            b,c,h,w=cur_state.shape
+            cur_state = cur_state.view(b,c,h*w).permute(2,0,1)
+            cur_ins_query=cur_ins_query.permute(1,0,2)
+
+            for j in range(n_trans_layer_each_block):
+                trans_layer_ind = i * n_trans_layer_each_block + j
+                trans_layer = self.transformer_decoder.layers[trans_layer_ind]
+                cur_state = trans_layer(
+                    query=cur_state,  # [h'*w', b, c]
+                    key=cur_ins_query,  # [nq, b, c]
+                    value=cur_ins_query,  # [nq, b, c]
+                    query_pos=None,
+                    key_pos=None,
+                    attn_masks=attn_masks,
+                    query_key_padding_mask=None,
+                    key_padding_mask=None
+                )  # out size: [h'*w', b, c]
+            # cur_state_h = torch.tensor(cur_state.shape[0]**0.5, device=cur_state.device).int()
+            # _, b, c = cur_state.shape
+            cur_state = cur_state.permute(1,2,0).view(b,c,h,w)
+
+            # Upscale to /4
+            cur_state = self.upsample_adds[i](cur_state, last_state)
+
+            # Out
+            future_states.append(cur_state)  # [b, d, h/4, w/4]
+            last_state = cur_state
+
+        future_states = torch.stack(future_states, dim=1)  # [b, t, d, h/4, w/4]
+        temporal_query = torch.stack(temporal_query, dim=1)  # [b, t, q, d]
+        ins_query = torch.stack(temporal_embed_for_mask_attn, dim=1)  # [b, t, q, d]
+
+        # Decode future states to larger resolution
+        future_states = self.dense_decoder(future_states)
+        future_states = F.interpolate(
+                        future_states,
+                        (future_states.shape[2], self.bev_size[-2], self.bev_size[-1]),
+                        mode='trilinear',
+                        align_corners=False
+                        )
+
+        ins_occ_query = self.query_to_occ_feat(ins_query)    # [b, t, q, query_out_dim]
+
+        # Generate final outputs
+        ins_occ_logits = torch.einsum("btqc,btchw->bqthw", ins_occ_query, future_states)
+
+        return ins_occ_logits
+
+    def merge_queries_trt(self, track_query, track_query_pos, ins_query):
+        track_query_pos = track_query_pos.detach()
+        ins_query = ins_query[-1]
+        ins_query = self.mode_fuser(ins_query).max(2)[0]
+        ins_query = self.multi_query_fuser(torch.cat([ins_query, track_query, track_query_pos], dim=2))
+
+        return ins_query
+
+    def forward_test_trt(
+                    self,
+                    bev_feat,#torch.Size([40000, 1, 256])
+                    track_query, #torch.Size([1, xx, 256])
+                    track_query_pos, #torch.Size([1, xx, 256])
+                    traj_query,#torch.Size([3, 1, xx, 6, 256])
+                    gt_segmentation=None,#torch.Size([1, 7, 200, 200]), int64
+                    track_scores=None,#torch.Size([1, xx])
+                ):
+        gt_segmentation = self.get_occ_labels_trt(gt_segmentation)
+        seg_gt  = gt_segmentation[:, :1+self.n_future]  # [1, 5, 1, 200, 200]
+        bs, track_query_shape1, track_query_shape2 = track_query.shape
+        ins_query = self.merge_queries_trt(track_query, track_query_pos, traj_query)
+        pred_ins_logits = self.forward_trt(bev_feat, ins_query=ins_query)
+        pred_ins_logits = pred_ins_logits[:,:,:1+self.n_future]  # [b, q, t, h, w]
+        pred_ins_sigmoid = pred_ins_logits.sigmoid()  # [b, q, t, h, w]
+
+        track_scores = track_scores.to(pred_ins_sigmoid)  # [b, q]
+        track_scores = track_scores[:, :, None, None, None]
+        pred_ins_sigmoid = pred_ins_sigmoid * track_scores  # [b, q, t, h, w]
+
+        pred_seg_scores = self.test_seg_thresh-1
+        pred_seg_scores2 = if_no_query(pred_ins_sigmoid, pred_seg_scores)
+        seg_out = (pred_seg_scores2 > self.test_seg_thresh).int()[:,:,None,...]  # [b, t, 1, h, w]
+        # seg_out = (seg_out*(track_query_shape1!=0)).long()
+
+        return seg_gt, seg_out
+
+    def get_occ_labels_trt(self, gt_segmentation):
+
+        gt_segmentation = gt_segmentation[:, :self.n_future+1].long()[:,:,None,...]
+
+        return gt_segmentation
+
+    def post_process_trt(self, gt_instance,seg_out,pred_ins_sigmoid):
+        ins_seg_gt = self.get_ins_seg_gt_trt(gt_instance[:, :1+self.n_future])
+        pred_consistent_instance_seg =  \
+            predict_instance_segmentation_and_trajectories(seg_out, pred_ins_sigmoid)
+        return ins_seg_gt, pred_consistent_instance_seg
+
+@HEADS.register_module()
+class OccHeadTRTP(OccHeadTRT):
+    def __init__(self,
+                 *args,
+                 **kwargs,
+                 ):
+        super(OccHeadTRTP, self).__init__(*args, **kwargs)

@@ -21,9 +21,11 @@ from mmdet.models import build_loss
 from mmdet.models.builder import LOSSES
 from mmdet.core import reduce_mean
 import sys
-sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+# sys.path.insert(1, '/path/to/UniAD_tensorrt')
 from third_party.uniad_mmdet3d.core.bbox.iou_calculators.iou3d_calculator import (
     bbox_overlaps_nearest_3d as iou_3d, )
+# from mmdet3d.core.bbox.iou_calculators.iou3d_calculator import (
+#     bbox_overlaps_nearest_3d as iou_3d, )
 from projects.mmdet3d_plugin.core.bbox.util import denormalize_bbox
 
 

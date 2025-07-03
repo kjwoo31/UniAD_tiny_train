@@ -14,7 +14,7 @@ from mmdet.models.dense_heads.anchor_free_head import AnchorFreeHead
 from mmdet.models.builder import HEADS, build_loss
 
 
-@HEADS.register_module(force=True)
+@HEADS.register_module()
 class SegDETRHead(
         AnchorFreeHead
 ):  # I modify DETRHead to make it to support panoptic segmentation
@@ -668,12 +668,14 @@ class SegDETRHead(
         if self.loss_cls.use_sigmoid:
             cls_score = cls_score.sigmoid()
             scores, indexes = cls_score.view(-1).topk(max_per_img)
+
             det_labels = indexes % self.num_things_classes
             bbox_index = indexes // self.num_things_classes
             bbox_pred = bbox_pred[bbox_index]
         else:
             scores, det_labels = F.softmax(cls_score, dim=-1)[..., :-1].max(-1)
             scores, bbox_index = scores.topk(max_per_img)
+
             bbox_pred = bbox_pred[bbox_index]
             det_labels = det_labels[bbox_index]
 
@@ -683,7 +685,7 @@ class SegDETRHead(
         det_bboxes[:, 0::2].clamp_(min=0, max=img_shape[1])
         det_bboxes[:, 1::2].clamp_(min=0, max=img_shape[0])
         if rescale:
-            det_bboxes /= det_bboxes.new_tensor(scale_factor)
+            det_bboxes = det_bboxes / det_bboxes.new_tensor(scale_factor)
         det_bboxes = torch.cat((det_bboxes, scores.unsqueeze(1)), -1)
 
         return det_bboxes, det_labels

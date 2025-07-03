@@ -10,10 +10,10 @@ from mmdet.models import DETECTORS
 import copy
 import os
 from ..dense_heads.seg_head_plugin import IOU
-from .uniad_track import UniADTrack
+from .uniad_track import UniADTrack, UniADTrackTRT
 from mmdet.models.builder import build_head
 
-@DETECTORS.register_module(force=True)
+@DETECTORS.register_module()
 class UniAD(UniADTrack):
     """
     UniAD: Unifying Detection, Tracking, Segmentation, Motion Forecasting, Occupancy Prediction and Planning for Autonomous Driving
@@ -31,8 +31,6 @@ class UniAD(UniADTrack):
             occ=1.0,
             planning=1.0
         ),
-        upsample_if_tiny=True,
-        upsample_scale_factor=4,
         **kwargs,
     ):
         super(UniAD, self).__init__(**kwargs)
@@ -46,8 +44,6 @@ class UniAD(UniADTrack):
             self.planning_head = build_head(planning_head)
         
         self.task_loss_weight = task_loss_weight
-        self.upsample_if_tiny = upsample_if_tiny
-        self.upsample_scale_factor = upsample_scale_factor
         assert set(task_loss_weight.keys()) == \
                {'track', 'occ', 'motion', 'map', 'planning'}
 
@@ -170,8 +166,7 @@ class UniAD(UniADTrack):
         losses.update(losses_track)
         
         # Upsample bev for tiny version
-        if self.upsample_if_tiny:
-            outs_track = self.upsample_bev_if_tiny(outs_track, scale_factor=self.upsample_scale_factor)
+        outs_track = self.upsample_bev_if_tiny(outs_track)
 
         bev_embed = outs_track["bev_embed"]
         bev_pos  = outs_track["bev_pos"]
@@ -255,12 +250,11 @@ class UniAD(UniADTrack):
                      gt_segmentation=None,
                      gt_instance=None, 
                      gt_occ_img_is_valid=None,
+                    #  export=False,
                      **kwargs
                     ):
         """Test function
         """
-        img_metas = img_metas[0].data
-        img = img[0].data
 
         for var, name in [(img_metas, 'img_metas')]:
             if not isinstance(var, list):
@@ -292,7 +286,7 @@ class UniAD(UniADTrack):
         self.prev_frame_info['prev_pos'] = tmp_pos
         self.prev_frame_info['prev_angle'] = tmp_angle
 
-        img = img[0].cuda()
+        img = img[0]
         img_metas = img_metas[0]
         timestamp = timestamp[0] if timestamp is not None else None
 
@@ -300,8 +294,7 @@ class UniAD(UniADTrack):
         result_track = self.simple_test_track(img, l2g_t, l2g_r_mat, img_metas, timestamp)
 
         # Upsample bev for tiny model        
-        if self.upsample_if_tiny:
-            result_track[0] = self.upsample_bev_if_tiny(result_track[0], scale_factor=self.upsample_scale_factor)
+        result_track[0] = self.upsample_bev_if_tiny(result_track[0])
         
         bev_embed = result_track[0]["bev_embed"]
 
@@ -370,3 +363,292 @@ def pop_elem_in_result(task_result:dict, pop_list:list=None):
         for pop_k in pop_list:
             task_result.pop(pop_k, None)
     return task_result
+
+@DETECTORS.register_module()
+class UniADTRT(UniADTrackTRT):
+    def __init__(
+        self,
+        seg_head=None,
+        motion_head=None,
+        occ_head=None,
+        planning_head=None,
+        task_loss_weight=dict(
+            track=1.0,
+            map=1.0,
+            motion=1.0,
+            occ=1.0,
+            planning=1.0
+        ),
+        **kwargs,
+    ):
+        super(UniADTRT, self).__init__(**kwargs)
+        if seg_head:
+            self.seg_head = build_head(seg_head)
+        if occ_head:
+            self.occ_head = build_head(occ_head)
+        if motion_head:
+            self.motion_head = build_head(motion_head)
+        if planning_head:
+            self.planning_head = build_head(planning_head)
+
+        self.task_loss_weight = task_loss_weight
+        assert set(task_loss_weight.keys()) == \
+               {'track', 'occ', 'motion', 'map', 'planning'}
+
+    @property
+    def with_planning_head(self):
+        return hasattr(self, 'planning_head') and self.planning_head is not None
+
+    @property
+    def with_occ_head(self):
+        return hasattr(self, 'occ_head') and self.occ_head is not None
+
+    @property
+    def with_motion_head(self):
+        return hasattr(self, 'motion_head') and self.motion_head is not None
+
+    @property
+    def with_seg_head(self):
+        return hasattr(self, 'seg_head') and self.seg_head is not None
+
+    def forward_uniad_trt(self,
+                    prev_track_intances0,
+                    prev_track_intances1,
+                    prev_track_intances2,
+                    prev_track_intances3,
+                    prev_track_intances4,
+                    prev_track_intances5,
+                    prev_track_intances6,
+                    prev_track_intances7,
+                    prev_track_intances8,
+                    prev_track_intances9,
+                    prev_track_intances10,
+                    prev_track_intances11,
+                    prev_track_intances12,
+                    prev_track_intances13,
+                    prev_timestamp,
+                    prev_l2g_r_mat,
+                    prev_l2g_t,
+
+                    prev_bev,
+                    gt_lane_labels,
+                    gt_lane_masks,
+                    gt_segmentation,
+                    img_metas_scene_token,#
+                    timestamp,
+                    l2g_r_mat,
+                    l2g_t,
+                    img=None,
+                    img_metas_can_bus=None,
+                    img_metas_lidar2img=None,
+                    image_shape=None,
+                    command=None,
+                    use_prev_bev=1.0,
+                    max_obj_id=0,
+                    **kwargs):
+        scene_token_changed = 1-use_prev_bev
+        prev_track_intances = [
+            prev_track_intances0,
+            prev_track_intances1,
+            prev_track_intances2,
+            prev_track_intances3,
+            prev_track_intances4,
+            prev_track_intances5,
+            prev_track_intances6,
+            prev_track_intances7,
+            prev_track_intances8,
+            prev_track_intances9,
+            prev_track_intances10,
+            prev_track_intances11,
+            prev_track_intances12,
+            prev_track_intances13,
+        ]
+        (
+        prev_track_instances_out,
+        prev_timestamp_out,
+        prev_l2g_t_out,
+        prev_l2g_r_mat_out,
+        bev_embed,
+        bev_pos,
+        output_classes,
+        output_coords,
+        all_past_traj_preds,
+        last_ref_pts,
+        query_feats,
+
+        track_query_embeddings,
+        track_query_matched_idxes,
+        bboxes_dict_bboxes,
+        bboxes_gravity_center,
+        bboxes_yaw,
+        scores,
+        labels,
+        track_scores,
+        bbox_index,
+        obj_idxes,
+        mask,
+        track_bbox_results1,
+        track_bbox_results2,
+
+        sdc_bboxes_dict_bboxes,
+        sdc_boxes_3d_gravity_center,
+        sdc_boxes_3d_yaw,
+        sdc_scores_3d,
+        sdc_track_scores,
+        sdc_track_bbox_results1,
+        sdc_track_bbox_results2,
+        sdc_embedding,
+        max_obj_id_out,
+
+        track_instances_fordet,
+        )=self.simple_test_track_trt(
+            prev_track_intances,
+            prev_timestamp,
+            prev_l2g_r_mat,
+            prev_l2g_t,
+            img_metas_can_bus,
+            img_metas_lidar2img,
+            # img_metas_scene_token,#
+            scene_token_changed,
+            timestamp,
+            l2g_r_mat,
+            l2g_t,
+            image_shape,
+            prev_bev,
+            max_obj_id,
+            img,
+            use_prev_bev,
+            )
+
+        (
+        bbox_pred,
+        seg_pred,
+        labels_pred,
+        drivable_pred,
+        score_pred,
+        lane_pred,
+        lane_score_pred,
+        stuff_score_pred,
+        drivable_intersection,
+        drivable_union,
+        lanes_intersection,
+        lanes_union,
+        divider_intersection,
+        divider_union,
+        crossing_intersection,
+        crossing_union,
+        contour_intersection,
+        contour_union,
+        drivable_iou,
+        lanes_iou,
+        divider_iou,
+        crossing_iou,
+        contour_iou,
+        memory,
+        memory_mask,
+        memory_pos,
+        lane_query,
+        lane_query_pos,
+        hw_lvl0,
+        reference,
+        results,
+        ori_shape
+        ) =  self.seg_head.forward_test_trt(
+                                bev_embed,
+                                gt_lane_labels,
+                                gt_lane_masks)
+
+        bev_embed = bev_embed.float().detach()
+        bev_pos = bev_pos.float().detach()
+        lane_query = lane_query.float().detach()
+        lane_query_pos = lane_query_pos.float().detach()
+        gt_segmentation = gt_segmentation.detach()
+        command = command.detach()
+        track_query_embeddings = track_query_embeddings.float().detach()
+        track_bbox_results1 = track_bbox_results1.float().detach()
+        track_bbox_results2 = track_bbox_results2.long().detach()
+        bboxes_gravity_center = bboxes_gravity_center.float().detach()
+        bboxes_yaw = bboxes_yaw.float().detach()
+        sdc_embedding = sdc_embedding.float().detach()
+        sdc_boxes_3d_gravity_center =  sdc_boxes_3d_gravity_center.float().detach()
+        sdc_boxes_3d_yaw = sdc_boxes_3d_yaw.float().detach()
+        sdc_track_bbox_results1 = sdc_track_bbox_results1.float().detach()
+        sdc_track_bbox_results2 = sdc_track_bbox_results2.long().detach()
+        outputs_traj_scores,\
+        outputs_trajs,\
+        valid_traj_masks,\
+        inter_states,\
+        out_track_query,\
+        track_query_pos,\
+        sdc_traj_query,\
+        sdc_track_query,\
+        sdc_track_query_pos, \
+        track_scores = \
+            self.motion_head.forward_test_trt(
+                bev_embed,
+                track_query_embeddings,
+                track_bbox_results1,
+                track_bbox_results2,
+                bboxes_gravity_center,
+                bboxes_yaw,
+                sdc_embedding,
+                sdc_boxes_3d_gravity_center,
+                sdc_boxes_3d_yaw,
+                sdc_track_bbox_results1,
+                sdc_track_bbox_results2,
+                lane_query,
+                lane_query_pos)
+        seg_gt, seg_out =\
+            self.occ_head.forward_test_trt(
+            bev_embed,
+            out_track_query,
+            track_query_pos,
+            inter_states,
+            gt_segmentation=gt_segmentation,
+            track_scores = track_scores,
+        )
+        outs_planning = self.planning_head.forward_test_trt(
+        bev_embed, sdc_traj_query, sdc_track_query,
+                        bev_pos, seg_out, [command.long()])
+        (
+            prev_track_intances0_out,
+            prev_track_intances1_out,
+            prev_track_intances2_out,
+            prev_track_intances3_out,
+            prev_track_intances4_out,
+            prev_track_intances5_out,
+            prev_track_intances6_out,
+            prev_track_intances7_out,
+            prev_track_intances8_out,
+            prev_track_intances9_out,
+            prev_track_intances10_out,
+            prev_track_intances11_out,
+            prev_track_intances12_out,
+            prev_track_intances13_out,
+        )  = prev_track_instances_out
+
+        return (prev_track_intances0_out,
+                prev_track_intances1_out,
+                # prev_track_intances2_out,
+                prev_track_intances3_out,
+                prev_track_intances4_out,
+                prev_track_intances5_out,
+                prev_track_intances6_out,
+                # prev_track_intances7_out,
+                prev_track_intances8_out,
+                prev_track_intances9_out,
+                # prev_track_intances10_out,
+                prev_track_intances11_out,
+                prev_track_intances12_out,
+                prev_track_intances13_out,
+                prev_timestamp_out,
+                prev_l2g_t_out,
+                prev_l2g_r_mat_out,
+                bev_embed,
+                bboxes_dict_bboxes,
+                scores,
+                labels.int(),
+                bbox_index.int(),
+                obj_idxes.int(),
+                max_obj_id_out.int(),seg_out,
+                outs_planning)

@@ -165,7 +165,7 @@ class SamplingResult_segformer(util_mixins.NiceRepr):
         return self
 
 
-@BBOX_SAMPLERS.register_module(force=True)
+@BBOX_SAMPLERS.register_module()
 class PseudoSampler_segformer(BaseSampler):
     """A pseudo sampler that does not do sampling actually."""
 
@@ -201,7 +201,7 @@ class PseudoSampler_segformer(BaseSampler):
         return sampling_result
 
 
-@BBOX_ASSIGNERS.register_module(force=True)
+@BBOX_ASSIGNERS.register_module()
 class HungarianAssigner_filter(BaseAssigner):
     """
     """
@@ -300,7 +300,7 @@ class HungarianAssigner_filter(BaseAssigner):
             
 
 
-@BBOX_ASSIGNERS.register_module(force=True)
+@BBOX_ASSIGNERS.register_module()
 class HungarianAssigner_multi_info(BaseAssigner):
     """Computes one-to-one matching between predictions and ground truth.
 

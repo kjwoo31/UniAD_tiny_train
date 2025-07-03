@@ -4,8 +4,9 @@ from mmdet.core.bbox import BaseBBoxCoder
 from mmdet.core.bbox.builder import BBOX_CODERS
 from projects.mmdet3d_plugin.core.bbox.util import normalize_bbox, denormalize_bbox
 import sys
-sys.path.insert(1, '/home/labuser/bjyang/BEVFormer_tensorrt')
+# sys.path.insert(1, '/path/to/UniAD_tensorrt')
 from third_party.uniad_mmdet3d.core.bbox import xywhr2xyxyr
+# from mmdet3d.core import xywhr2xyxyr
 from mmcv.ops import nms_bev
 
 @BBOX_CODERS.register_module(force=True)
