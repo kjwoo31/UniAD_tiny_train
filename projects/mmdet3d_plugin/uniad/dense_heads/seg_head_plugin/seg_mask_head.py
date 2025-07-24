@@ -119,7 +119,7 @@ class Attention(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     @force_fp32(apply_to=('query', 'key', 'value'))
-    def forward(self, query, key, value, key_padding_mask, hw_lvl):
+    def forward(self, query, key, value): # , key_padding_mask, hw_lvl):
         B, N, C = query.shape
         _, L, _ = key.shape
         q = self.q(query).reshape(B, N,
@@ -188,7 +188,7 @@ class AttentionTail(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     @force_fp32(apply_to=('query', 'key'))
-    def forward(self, query, key, key_padding_mask, hw_lvl=None):
+    def forward(self, query, key):# , key_padding_mask, hw_lvl=None):
         B, N, C = query.shape
         _, L, _ = key.shape
         #print('query, key, value', query.shape, value.shape, key.shape)
@@ -256,11 +256,11 @@ class Block(nn.Module):
             self.norm3 = norm_layer(dim)
 
     @force_fp32(apply_to=('query', 'key', 'value'))
-    def forward(self, query, key, value, key_padding_mask=None, hw_lvl=None):
+    def forward(self, query, key, value): #, key_padding_mask=None, hw_lvl=None):
         if self.self_attn:
             query = query + self.drop_path(self.self_attention(query))
             query = self.norm3(query)
-        x, mask = self.attn(query, key, value, key_padding_mask, hw_lvl=hw_lvl)
+        x, mask = self.attn(query, key, value) #, key_padding_mask, hw_lvl=hw_lvl)
         query = query + self.drop_path(x)
         query = self.head_norm1(query)
 
@@ -369,7 +369,7 @@ class SegMaskHead(nn.Module):
     @force_fp32(apply_to=('memory', 'mask_memory', 'pos_memory', 'query_embed',
                           'mask_query', 'pos_query'))
     def forward(self, memory, mask_memory, pos_memory, query_embed, mask_query,
-                pos_query, hw_lvl):
+                pos_query):#, hw_lvl):
         if mask_memory is not None and isinstance(mask_memory, torch.Tensor):
             mask_memory = mask_memory.to(torch.bool)
         masks = []
@@ -378,15 +378,15 @@ class SegMaskHead(nn.Module):
             query_embed, mask = block(self.with_pos_embed(
                 query_embed, pos_query),
                                       self.with_pos_embed(memory, pos_memory),
-                                      memory,
-                                      key_padding_mask=mask_memory,
-                                      hw_lvl=hw_lvl)
+                                      memory)
+                                    #   key_padding_mask=mask_memory,
+                                    #   hw_lvl=hw_lvl)
             masks.append(mask)
             inter_query.append(query_embed)
             #if i == 1:
             #    return mask, masks, inter_query
         attn = self.attnen(self.with_pos_embed(query_embed, pos_query),
-                           self.with_pos_embed(memory, pos_memory),
-                           key_padding_mask=mask_memory,
-                           hw_lvl=hw_lvl)
+                           self.with_pos_embed(memory, pos_memory))
+                        #    key_padding_mask=mask_memory,
+                        #    hw_lvl=hw_lvl)
         return attn, masks, inter_query

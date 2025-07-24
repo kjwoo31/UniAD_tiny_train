@@ -249,8 +249,11 @@ class OccHead(BaseModule):
                     key_padding_mask=None
                 )  # out size: [h'*w', b, c]
 
-            cur_state = rearrange(cur_state, '(h w) b c -> b c h w', h=self.bev_size[0]//8)
-            
+            # cur_state = rearrange(cur_state, '(h w) b c -> b c h w', h=self.bev_size[0]//8)
+            cur_state_h = int(cur_state.shape[0]**0.5)
+            _, b, c = cur_state.shape
+            cur_state = cur_state.permute(1,2,0).view(b,c,cur_state_h,cur_state_h)
+
             # Upscale to /4
             cur_state = self.upsample_adds[i](cur_state, last_state)
 
@@ -265,6 +268,12 @@ class OccHead(BaseModule):
 
         # Decode future states to larger resolution
         future_states = self.dense_decoder(future_states)
+        future_states = F.interpolate(
+                        future_states,
+                        (int(future_states.shape[-3]), int(self.bev_size[-2]), int(self.bev_size[-1])),
+                        mode='trilinear',
+                        align_corners=False
+                        )
         ins_occ_query = self.query_to_occ_feat(ins_query)    # [b, t, q, query_out_dim]
         
         # Generate final outputs
