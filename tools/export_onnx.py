@@ -150,6 +150,8 @@ def parse_args():
 
 
 def main():
+    use_all_modules = False
+    use_perception_prediction_modules = True
     args = parse_args()
 
     assert args.out or args.eval or args.format_only or args.show \
@@ -302,34 +304,64 @@ def main():
         use_prev_bev=[1],
         max_obj_id=[1],
     )
-    output_shapes = dict(
-        prev_track_intances0_out=[901, 512],
-        prev_track_intances1_out=[901, 3],
-        # prev_track_intances2_out=[901, 256], will not be used in ONNX graph
-        prev_track_intances3_out=[901],
-        prev_track_intances4_out=[901],
-        prev_track_intances5_out=[901],
-        prev_track_intances6_out=[901],
-        # prev_track_intances7_out=[901], will not be used in ONNX graph
-        prev_track_intances8_out=[901],
-        prev_track_intances9_out=[901, 10],
-        # prev_track_intances10_out=[901, 10], will not be used in ONNX graph
-        prev_track_intances11_out=[901, 4, 256],
-        prev_track_intances12_out=[901, 4],
-        prev_track_intances13_out=[901],
-        prev_timestamp_out=[1],
-        prev_l2g_t_out=[1, 3],
-        prev_l2g_r_mat_out=[1, 3, 3],
-        bev_embed=[bevh**2, 1, 256], 
-        bboxes_dict_bboxes=[200, 9],
-        scores=[200],
-        labels=[200],
-        bbox_index=[200],
-        obj_idxes=[200],
-        max_obj_id_out=[1],
-        seg_out=[1, 5, 1, bevh, bevh], # preserved for future collision optimization use
-        outs_planning=[1, 6, 2],
-    )
+    if use_all_modules:
+        output_shapes = dict(
+            prev_track_intances0_out=[901, 512],
+            prev_track_intances1_out=[901, 3],
+            # prev_track_intances2_out=[901, 256], will not be used in ONNX graph
+            prev_track_intances3_out=[901],
+            prev_track_intances4_out=[901],
+            prev_track_intances5_out=[901],
+            prev_track_intances6_out=[901],
+            # prev_track_intances7_out=[901], will not be used in ONNX graph
+            prev_track_intances8_out=[901],
+            prev_track_intances9_out=[901, 10],
+            # prev_track_intances10_out=[901, 10], will not be used in ONNX graph
+            prev_track_intances11_out=[901, 4, 256],
+            prev_track_intances12_out=[901, 4],
+            prev_track_intances13_out=[901],
+            prev_timestamp_out=[1],
+            prev_l2g_t_out=[1, 3],
+            prev_l2g_r_mat_out=[1, 3, 3],
+            bev_embed=[bevh**2, 1, 256], 
+            bboxes_dict_bboxes=[200, 9],
+            scores=[200],
+            labels=[200],
+            bbox_index=[200],
+            obj_idxes=[200],
+            max_obj_id_out=[1],
+            seg_out=[1, 5, 1, bevh, bevh], # preserved for future collision optimization use
+            outs_planning=[1, 6, 2],
+        )
+    elif use_perception_prediction_modules:
+        output_shapes = dict(
+            prev_track_intances0_out=[901, 512],
+            prev_track_intances1_out=[901, 3],
+            # prev_track_intances2_out=[901, 256], will not be used in ONNX graph
+            prev_track_intances3_out=[901],
+            prev_track_intances4_out=[901],
+            prev_track_intances5_out=[901],
+            prev_track_intances6_out=[901],
+            # prev_track_intances7_out=[901], will not be used in ONNX graph
+            prev_track_intances8_out=[901],
+            prev_track_intances9_out=[901, 10],
+            # prev_track_intances10_out=[901, 10], will not be used in ONNX graph
+            prev_track_intances11_out=[901, 4, 256],
+            prev_track_intances12_out=[901, 4],
+            prev_track_intances13_out=[901],
+            prev_timestamp_out=[1],
+            prev_l2g_t_out=[1, 3],
+            prev_l2g_r_mat_out=[1, 3, 3],
+            bev_embed=[bevh**2, 1, 256], 
+            bboxes_dict_bboxes=[200, 9],
+            scores=[200],
+            labels=[200],
+            bbox_index=[200],
+            obj_idxes=[200],
+            max_obj_id_out=[1],
+            # seg_out=[1, 5, 1, bevh, bevh], # preserved for future collision optimization use
+            # outs_planning=[1, 6, 2],
+        )
 
     dynamic_axes = {}
     # dynamic_axes = {
@@ -497,11 +529,20 @@ def main():
                     img_metas_scene_token = cur_img_metas_scene_token
         inputs = tuple(inputs.values())
         with torch.no_grad():
-            dummy_outputs = model.forward_uniad_trt(*inputs)
-        max_obj_id = dummy_outputs[-3]
-        prev_l2g_r_mat_out = dummy_outputs[-10]
-        prev_l2g_t_out = dummy_outputs[-11]
-        prev_timestamp_out = dummy_outputs[-12]
+            if use_all_modules:
+                dummy_outputs = model.forward_uniad_trt(*inputs)
+            elif use_perception_prediction_modules:
+                dummy_outputs = model.forward_uniad_trt_perception_prediction(*inputs)
+        if use_all_modules:
+            max_obj_id = dummy_outputs[-3]
+            prev_l2g_r_mat_out = dummy_outputs[-10]
+            prev_l2g_t_out = dummy_outputs[-11]
+            prev_timestamp_out = dummy_outputs[-12]
+        elif use_perception_prediction_modules:
+            max_obj_id = dummy_outputs[-1]
+            prev_l2g_r_mat_out = dummy_outputs[-8]
+            prev_l2g_t_out = dummy_outputs[-9]
+            prev_timestamp_out = dummy_outputs[-10]
         output_name = list(output_shapes.keys())
         if not os.path.exists(onnx_export_output):
             os.mkdir(onnx_export_output)
@@ -512,7 +553,10 @@ def main():
 
         if iid==5:
             print('start deploying iid: ', iid)
-            model.forward = model.forward_uniad_trt
+            if use_all_modules:
+                model.forward = model.forward_uniad_trt
+            elif use_perception_prediction_modules:
+                model.forward = model.forward_uniad_trt_perception_prediction
             input_name = list(input_shapes.keys())
             output_name = list(output_shapes.keys())
             if not os.path.exists(onnx_folder):
@@ -530,9 +574,9 @@ def main():
                     do_constant_folding=False, 
                     input_names = input_name, 
                     output_names=output_name, 
-                    opset_version=16,
-                    operator_export_type=OperatorExportTypes.ONNX_FALLTHROUGH,
-                    dynamic_axes=dynamic_axes)
+                    opset_version=11,
+                    operator_export_type=OperatorExportTypes.ONNX_FALLTHROUGH)
+                    # dynamic_axes=dynamic_axes)
             
             graph = gs.import_onnx(onnx.load(onnx_file_name))
             for node in graph.nodes:
