@@ -879,4 +879,5 @@ class UniADTRT(UniADTrackTRT):
                 scores,
                 labels.int(),
                 bbox_index.int(),
-                obj_idxes.int())
+                obj_idxes.int(),
+                max_obj_id_out.int())
