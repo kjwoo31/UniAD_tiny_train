@@ -30,9 +30,6 @@ import pickle
 from prettytable import PrettyTable
 
 from nuscenes import NuScenes
-from projects.mmdet3d_plugin.datasets.data_utils.vector_map import VectorizedLocalMap
-from projects.mmdet3d_plugin.datasets.data_utils.rasterize import preprocess_map
-from projects.mmdet3d_plugin.datasets.eval_utils.map_api import NuScenesMap
 from projects.mmdet3d_plugin.datasets.data_utils.trajectory_api import NuScenesTraj
 from .data_utils.data_utils import lidar_nusc_box_to_global, obtain_map_info, output_to_nusc_box, output_to_nusc_box_det
 from nuscenes.prediction import convert_local_coords_to_global
@@ -47,28 +44,17 @@ class NuScenesE2EDataset(NuScenesDataset):
 
     def __init__(self,
                  queue_length=4,
-                 bev_size=(200, 200),
-                 patch_size=(102.4, 102.4),
-                 canvas_size=(200, 200),
                  overlap_test=False,
                  predict_steps=12,
-                 planning_steps=6,
+                 planning_steps=0,
                  past_steps=4,
                  fut_steps=4,
                  use_nonlinear_optimizer=False,
-                 lane_ann_file=None,
                  eval_mod=None,
 
                  # For debug
                  is_debug=False,
                  len_debug=30,
-
-                 # Occ dataset
-                 enbale_temporal_aug=False,
-                 occ_receptive_field=3,
-                 occ_n_future=4,
-                 occ_filter_invalid_sample=False,
-                 occ_filter_by_valid_flag=False,
 
                  file_client_args=dict(backend='disk'),
                  *args, 
@@ -82,14 +68,11 @@ class NuScenesE2EDataset(NuScenesDataset):
         super().__init__(*args, **kwargs)
         self.queue_length = queue_length
         self.overlap_test = overlap_test
-        self.bev_size = bev_size
         self.predict_steps = predict_steps
         self.planning_steps = planning_steps
         self.past_steps = past_steps
         self.fut_steps = fut_steps
         self.scene_token = None
-        self.lane_infos = self.load_annotations(lane_ann_file) \
-            if lane_ann_file else None
         self.eval_mod = eval_mod
 
         self.use_nonlinear_optimizer = use_nonlinear_optimizer
@@ -97,26 +80,6 @@ class NuScenesE2EDataset(NuScenesDataset):
         self.nusc = NuScenes(version=self.version,
                              dataroot=self.data_root, verbose=True)
 
-        self.map_num_classes = 3
-        if canvas_size[0] == 50:
-            self.thickness = 1
-        elif canvas_size[0] == 200:
-            self.thickness = 2
-        else:
-            assert False
-        self.angle_class = 36
-        self.patch_size = patch_size
-        self.canvas_size = canvas_size
-        self.nusc_maps = {
-            'boston-seaport': NuScenesMap(dataroot=self.data_root, map_name='boston-seaport'),
-            'singapore-hollandvillage': NuScenesMap(dataroot=self.data_root, map_name='singapore-hollandvillage'),
-            'singapore-onenorth': NuScenesMap(dataroot=self.data_root, map_name='singapore-onenorth'),
-            'singapore-queenstown': NuScenesMap(dataroot=self.data_root, map_name='singapore-queenstown'),
-        }
-        self.vector_map = VectorizedLocalMap(
-            self.data_root,
-            patch_size=self.patch_size,
-            canvas_size=self.canvas_size)
         self.traj_api = NuScenesTraj(self.nusc,
                                      self.predict_steps,
                                      self.planning_steps,
@@ -126,16 +89,6 @@ class NuScenesE2EDataset(NuScenesDataset):
                                      self.CLASSES,
                                      self.box_mode_3d,
                                      self.use_nonlinear_optimizer)
-
-        # Occ
-        self.enbale_temporal_aug = enbale_temporal_aug
-        assert self.enbale_temporal_aug is False
-
-        self.occ_receptive_field = occ_receptive_field  # past + current
-        self.occ_n_future = occ_n_future  # future only
-        self.occ_filter_invalid_sample = occ_filter_invalid_sample
-        self.occ_filter_by_valid_flag = occ_filter_by_valid_flag
-        self.occ_only_total_frames = 7  # NOTE: hardcode, not influenced by planning
 
     def __len__(self):
         if not self.is_debug:
@@ -184,25 +137,17 @@ class NuScenesE2EDataset(NuScenesDataset):
                 gt_inds: gt_inds of each frame (list)
         """
         data_queue = []
-        self.enbale_temporal_aug = False
-        if self.enbale_temporal_aug:
-            # temporal aug
-            prev_indexs_list = list(range(index-self.queue_length, index))
-            random.shuffle(prev_indexs_list)
-            prev_indexs_list = sorted(prev_indexs_list[1:], reverse=True)
-            input_dict = self.get_data_info(index)
-        else:
-            # ensure the first and final frame in same scene
-            final_index = index
-            first_index = index - self.queue_length + 1
-            if first_index < 0:
-                return None
-            if self.data_infos[first_index]['scene_token'] != \
-                    self.data_infos[final_index]['scene_token']:
-                return None
-            # current timestamp
-            input_dict = self.get_data_info(final_index)
-            prev_indexs_list = list(reversed(range(first_index, final_index)))
+        # ensure the first and final frame in same scene
+        final_index = index
+        first_index = index - self.queue_length + 1
+        if first_index < 0:
+            return None
+        if self.data_infos[first_index]['scene_token'] != \
+                self.data_infos[final_index]['scene_token']:
+            return None
+        # current timestamp
+        input_dict = self.get_data_info(final_index)
+        prev_indexs_list = list(reversed(range(first_index, final_index)))
         if input_dict is None:
             return None
         frame_idx = input_dict['frame_idx']
@@ -221,8 +166,6 @@ class NuScenesE2EDataset(NuScenesDataset):
         # retrieve previous infos
 
         for i in prev_indexs_list:
-            if self.enbale_temporal_aug:
-                i = max(0, i)
             input_dict = self.get_data_info(i)
             if input_dict is None:
                 return None
@@ -284,9 +227,6 @@ class NuScenesE2EDataset(NuScenesDataset):
         gt_fut_traj_mask = to_tensor(queue[-1]['gt_fut_traj_mask'])
         gt_sdc_fut_traj = to_tensor(queue[-1]['gt_sdc_fut_traj'])
         gt_sdc_fut_traj_mask = to_tensor(queue[-1]['gt_sdc_fut_traj_mask'])
-        gt_future_boxes_list = queue[-1]['gt_future_boxes']
-        gt_future_labels_list = [to_tensor(each)
-                                 for each in queue[-1]['gt_future_labels']]
 
         metas_map = {}
         prev_pos = None
@@ -325,8 +265,6 @@ class NuScenesE2EDataset(NuScenesDataset):
         queue['gt_fut_traj_mask'] = DC(gt_fut_traj_mask)
         queue['gt_past_traj'] = DC(gt_past_traj_list)
         queue['gt_past_traj_mask'] = DC(gt_past_traj_mask_list)
-        queue['gt_future_boxes'] = DC(gt_future_boxes_list, cpu_only=True)
-        queue['gt_future_labels'] = DC(gt_future_labels_list)
         return queue
 
     def get_ann_info(self, index):
@@ -433,54 +371,6 @@ class NuScenesE2EDataset(NuScenesDataset):
         """
         info = self.data_infos[index]
 
-        # semantic format
-        lane_info = self.lane_infos[index] if self.lane_infos else None
-        # panoptic format
-        location = self.nusc.get('log', self.nusc.get(
-            'scene', info['scene_token'])['log_token'])['location']
-        vectors = self.vector_map.gen_vectorized_samples(location,
-                                                         info['ego2global_translation'],
-                                                         info['ego2global_rotation'])
-        semantic_masks, instance_masks, forward_masks, backward_masks = preprocess_map(vectors,
-                                                                                       self.patch_size,
-                                                                                       self.canvas_size,
-                                                                                       self.map_num_classes,
-                                                                                       self.thickness,
-                                                                                       self.angle_class)
-        instance_masks = np.rot90(instance_masks, k=-1, axes=(1, 2))
-        instance_masks = torch.tensor(instance_masks.copy())
-        gt_labels = []
-        gt_bboxes = []
-        gt_masks = []
-        for cls in range(self.map_num_classes):
-            for i in np.unique(instance_masks[cls]):
-                if i == 0:
-                    continue
-                gt_mask = (instance_masks[cls] == i).to(torch.uint8)
-                ys, xs = np.where(gt_mask)
-                gt_bbox = [min(xs), min(ys), max(xs), max(ys)]
-                gt_labels.append(cls)
-                gt_bboxes.append(gt_bbox)
-                gt_masks.append(gt_mask)
-        map_mask = obtain_map_info(self.nusc,
-                                   self.nusc_maps,
-                                   info,
-                                   patch_size=self.patch_size,
-                                   canvas_size=self.canvas_size,
-                                   layer_names=['lane_divider', 'road_divider'])
-        map_mask = np.flip(map_mask, axis=1)
-        map_mask = np.rot90(map_mask, k=-1, axes=(1, 2))
-        map_mask = torch.tensor(map_mask.copy())
-        for i, gt_mask in enumerate(map_mask[:-1]):
-            ys, xs = np.where(gt_mask)
-            gt_bbox = [min(xs), min(ys), max(xs), max(ys)]
-            gt_labels.append(i + self.map_num_classes)
-            gt_bboxes.append(gt_bbox)
-            gt_masks.append(gt_mask)
-        gt_labels = torch.tensor(gt_labels)
-        gt_bboxes = torch.tensor(np.stack(gt_bboxes))
-        gt_masks = torch.stack(gt_masks)
-
         # standard protocal modified from SECOND.Pytorch
         input_dict = dict(
             sample_idx=info['token'],
@@ -494,10 +384,6 @@ class NuScenesE2EDataset(NuScenesDataset):
             can_bus=info['can_bus'],
             frame_idx=info['frame_idx'],
             timestamp=info['timestamp'] / 1e6,
-            map_filename=lane_info['maps']['map_mask'] if lane_info else None,
-            gt_lane_labels=gt_labels,
-            gt_lane_bboxes=gt_bboxes,
-            gt_lane_masks=gt_masks,
         )
 
         l2e_r = info['lidar2ego_rotation']
@@ -549,10 +435,6 @@ class NuScenesE2EDataset(NuScenesDataset):
         # if not self.test_mode:
         annos = self.get_ann_info(index)
         input_dict['ann_info'] = annos
-        if 'sdc_planning' in input_dict['ann_info'].keys():
-            input_dict['sdc_planning'] = input_dict['ann_info']['sdc_planning']
-            input_dict['sdc_planning_mask'] = input_dict['ann_info']['sdc_planning_mask']
-            input_dict['command'] = input_dict['ann_info']['command']
 
         rotation = Quaternion(input_dict['ego2global_rotation'])
         translation = input_dict['ego2global_translation']
@@ -565,44 +447,7 @@ class NuScenesE2EDataset(NuScenesDataset):
         can_bus[-2] = patch_angle / 180 * np.pi
         can_bus[-1] = patch_angle
 
-        # TODO: Warp all those below occupancy-related codes into a function
-        prev_indices, future_indices = self.occ_get_temporal_indices(
-            index, self.occ_receptive_field, self.occ_n_future)
-
-        # ego motions of all frames are needed
-        all_frames = prev_indices + [index] + future_indices
-
-        # whether invalid frames is present
-        # 
-        has_invalid_frame = -1 in all_frames[:self.occ_only_total_frames]
-        # NOTE: This can only represent 7 frames in total as it influence evaluation
-        input_dict['occ_has_invalid_frame'] = has_invalid_frame
-        input_dict['occ_img_is_valid'] = np.array(all_frames) >= 0
-
-        # might have None if not in the same sequence
-        future_frames = [index] + future_indices
-
-        # get lidar to ego to global transforms for each curr and fut index
-        occ_transforms = self.occ_get_transforms(
-            future_frames)  # might have None
-        input_dict.update(occ_transforms)
-
-        # for (current and) future frames, detection labels are needed
-        # generate detection labels for current + future frames
-        input_dict['occ_future_ann_infos'] = \
-            self.get_future_detection_infos(future_frames)
         return input_dict
-
-    def get_future_detection_infos(self, future_frames):
-        detection_ann_infos = []
-        for future_frame in future_frames:
-            if future_frame >= 0:
-                detection_ann_infos.append(
-                    self.occ_get_detection_ann_info(future_frame),
-                )
-            else:
-                detection_ann_infos.append(None)
-        return detection_ann_infos
 
     def occ_get_temporal_indices(self, index, receptive_field, n_future):
         current_scene_token = self.data_infos[index]['scene_token']
@@ -668,58 +513,6 @@ class NuScenesE2EDataset(NuScenesDataset):
         }
 
         return res
-
-    def occ_get_detection_ann_info(self, index):
-        info = self.data_infos[index].copy()
-        gt_bboxes_3d = info['gt_boxes'].copy()
-        gt_names_3d = info['gt_names'].copy()
-        gt_ins_inds = info['gt_inds'].copy()
-
-        gt_vis_tokens = info.get('visibility_tokens', None)
-
-        if self.use_valid_flag:
-            gt_valid_flag = info['valid_flag']
-        else:
-            gt_valid_flag = info['num_lidar_pts'] > 0
-
-        assert self.occ_filter_by_valid_flag is False
-        if self.occ_filter_by_valid_flag:
-            gt_bboxes_3d = gt_bboxes_3d[gt_valid_flag]
-            gt_names_3d = gt_names_3d[gt_valid_flag]
-            gt_ins_inds = gt_ins_inds[gt_valid_flag]
-            gt_vis_tokens = gt_vis_tokens[gt_valid_flag]
-
-        # cls_name to cls_id
-        gt_labels_3d = []
-        for cat in gt_names_3d:
-            if cat in self.CLASSES:
-                gt_labels_3d.append(self.CLASSES.index(cat))
-            else:
-                gt_labels_3d.append(-1)
-        gt_labels_3d = np.array(gt_labels_3d)
-
-        if self.with_velocity:
-            gt_velocity = info['gt_velocity']
-            nan_mask = np.isnan(gt_velocity[:, 0])
-            gt_velocity[nan_mask] = [0.0, 0.0]
-            gt_bboxes_3d = np.concatenate([gt_bboxes_3d, gt_velocity], axis=-1)
-
-        # the nuscenes box center is [0.5, 0.5, 0.5], we change it to be
-        # the same as KITTI (0.5, 0.5, 0)
-        gt_bboxes_3d = LiDARInstance3DBoxes(
-            gt_bboxes_3d,
-            box_dim=gt_bboxes_3d.shape[-1],
-            origin=(0.5, 0.5, 0.5)).convert_to(self.box_mode_3d)
-
-        anns_results = dict(
-            gt_bboxes_3d=gt_bboxes_3d,
-            gt_labels_3d=gt_labels_3d,
-            # gt_names=gt_names_3d,
-            gt_inds=gt_ins_inds,
-            gt_vis_tokens=gt_vis_tokens,
-        )
-
-        return anns_results
 
     def __getitem__(self, idx):
         """Get item from infos according to the given index.

@@ -20,48 +20,24 @@ class UniAD(UniADTrack):
     """
     def __init__(
         self,
-        seg_head=None,
         motion_head=None,
-        occ_head=None,
-        planning_head=None,
         task_loss_weight=dict(
             track=1.0,
-            map=1.0,
             motion=1.0,
-            occ=1.0,
-            planning=1.0
         ),
         **kwargs,
     ):
         super(UniAD, self).__init__(**kwargs)
-        if seg_head:
-            self.seg_head = build_head(seg_head)
-        if occ_head:
-            self.occ_head = build_head(occ_head)
         if motion_head:
             self.motion_head = build_head(motion_head)
-        if planning_head:
-            self.planning_head = build_head(planning_head)
         
         self.task_loss_weight = task_loss_weight
         assert set(task_loss_weight.keys()) == \
-               {'track', 'occ', 'motion', 'map', 'planning'}
-
-    @property
-    def with_planning_head(self):
-        return hasattr(self, 'planning_head') and self.planning_head is not None
-    
-    @property
-    def with_occ_head(self):
-        return hasattr(self, 'occ_head') and self.occ_head is not None
+               {'track', 'motion'}
 
     @property
     def with_motion_head(self):
         return hasattr(self, 'motion_head') and self.motion_head is not None
-
-    @property
-    def with_seg_head(self):
-        return hasattr(self, 'seg_head') and self.seg_head is not None
 
     def forward_dummy(self, img):
         dummy_metas = None
@@ -94,9 +70,6 @@ class UniAD(UniADTrack):
                       l2g_t=None,
                       l2g_r_mat=None,
                       timestamp=None,
-                      gt_lane_labels=None,
-                      gt_lane_bboxes=None,
-                      gt_lane_masks=None,
                       gt_fut_traj=None,
                       gt_fut_traj_mask=None,
                       gt_past_traj=None,
@@ -105,19 +78,7 @@ class UniAD(UniADTrack):
                       gt_sdc_label=None,
                       gt_sdc_fut_traj=None,
                       gt_sdc_fut_traj_mask=None,
-                      
-                      # Occ_gt
-                      gt_segmentation=None,
-                      gt_instance=None, 
-                      gt_occ_img_is_valid=None,
-                      
-                      #planning
-                      sdc_planning=None,
-                      sdc_planning_mask=None,
-                      command=None,
-                      
-                      # fut gt for planning
-                      gt_future_boxes=None,
+
                       **kwargs,  # [1, 9]
                       ):
         """Forward training function for the model that includes multiple tasks, such as tracking, segmentation, motion prediction, occupancy prediction, and planning.
@@ -173,14 +134,6 @@ class UniAD(UniADTrack):
 
         img_metas = [each[len_queue-1] for each in img_metas]
 
-        outs_seg = dict()
-        if self.with_seg_head:          
-            losses_seg, outs_seg = self.seg_head.forward_train(bev_embed, img_metas,
-                                                          gt_lane_labels, gt_lane_bboxes, gt_lane_masks)
-            
-            losses_seg = self.loss_weighted_and_prefixed(losses_seg, prefix='map')
-            losses.update(losses_seg)
-
         outs_motion = dict()
         # Forward Motion Head
         if self.with_motion_head:
@@ -188,40 +141,13 @@ class UniAD(UniADTrack):
                                                         gt_bboxes_3d, gt_labels_3d, 
                                                         gt_fut_traj, gt_fut_traj_mask, 
                                                         gt_sdc_fut_traj, gt_sdc_fut_traj_mask, 
-                                                        outs_track=outs_track, outs_seg=outs_seg
+                                                        outs_track=outs_track
                                                     )
             losses_motion = ret_dict_motion["losses"]
             outs_motion = ret_dict_motion["outs_motion"]
             outs_motion['bev_pos'] = bev_pos
             losses_motion = self.loss_weighted_and_prefixed(losses_motion, prefix='motion')
             losses.update(losses_motion)
-
-        # Forward Occ Head
-        if self.with_occ_head:
-            if outs_motion['track_query'].shape[1] == 0:
-                # TODO: rm hard code
-                outs_motion['track_query'] = torch.zeros((1, 1, 256)).to(bev_embed)
-                outs_motion['track_query_pos'] = torch.zeros((1,1, 256)).to(bev_embed)
-                outs_motion['traj_query'] = torch.zeros((3, 1, 1, 6, 256)).to(bev_embed)
-                outs_motion['all_matched_idxes'] = [[-1]]
-            losses_occ = self.occ_head.forward_train(
-                            bev_embed, 
-                            outs_motion, 
-                            gt_inds_list=gt_inds,
-                            gt_segmentation=gt_segmentation,
-                            gt_instance=gt_instance,
-                            gt_img_is_valid=gt_occ_img_is_valid,
-                        )
-            losses_occ = self.loss_weighted_and_prefixed(losses_occ, prefix='occ')
-            losses.update(losses_occ)
-        
-
-        # Forward Plan Head
-        if self.with_planning_head:
-            outs_planning = self.planning_head.forward_train(bev_embed, outs_motion, sdc_planning, sdc_planning_mask, command, gt_future_boxes)
-            losses_planning = outs_planning['losses']
-            losses_planning = self.loss_weighted_and_prefixed(losses_planning, prefix='planning')
-            losses.update(losses_planning)
         
         for k,v in losses.items():
             losses[k] = torch.nan_to_num(v)
@@ -238,18 +164,7 @@ class UniAD(UniADTrack):
                      l2g_t=None,
                      l2g_r_mat=None,
                      timestamp=None,
-                     gt_lane_labels=None,
-                     gt_lane_masks=None,
                      rescale=False,
-                     # planning gt(for evaluation only)
-                     sdc_planning=None,
-                     sdc_planning_mask=None,
-                     command=None,
- 
-                     # Occ_gt (for evaluation only)
-                     gt_segmentation=None,
-                     gt_instance=None, 
-                     gt_occ_img_is_valid=None,
                     #  export=False,
                      **kwargs
                     ):
@@ -298,57 +213,21 @@ class UniAD(UniADTrack):
         
         bev_embed = result_track[0]["bev_embed"]
 
-        if self.with_seg_head:
-            result_seg =  self.seg_head.forward_test(bev_embed, gt_lane_labels, gt_lane_masks, img_metas, rescale)
-
         if self.with_motion_head:
-            result_motion, outs_motion = self.motion_head.forward_test(bev_embed, outs_track=result_track[0], outs_seg=result_seg[0])
+            result_motion, outs_motion = self.motion_head.forward_test(bev_embed, outs_track=result_track[0])
             outs_motion['bev_pos'] = result_track[0]['bev_pos']
-
-        outs_occ = dict()
-        if self.with_occ_head:
-            occ_no_query = outs_motion['track_query'].shape[1] == 0
-            outs_occ = self.occ_head.forward_test(
-                bev_embed, 
-                outs_motion,
-                no_query = occ_no_query,
-                gt_segmentation=gt_segmentation,
-                gt_instance=gt_instance,
-                gt_img_is_valid=gt_occ_img_is_valid,
-            )
-            result[0]['occ'] = outs_occ
-        
-        if self.with_planning_head:
-            planning_gt=dict(
-                segmentation=gt_segmentation,
-                sdc_planning=sdc_planning,
-                sdc_planning_mask=sdc_planning_mask,
-                command=command
-            )
-            result_planning = self.planning_head.forward_test(bev_embed, outs_motion, outs_occ, command)
-            result[0]['planning'] = dict(
-                planning_gt=planning_gt,
-                result_planning=result_planning,
-            )
 
         pop_track_list = ['prev_bev', 'bev_pos', 'bev_embed', 'track_query_embeddings', 'sdc_embedding']
         result_track[0] = pop_elem_in_result(result_track[0], pop_track_list)
 
-        if self.with_seg_head:
-            result_seg[0] = pop_elem_in_result(result_seg[0], pop_list=['pts_bbox', 'args_tuple'])
         if self.with_motion_head:
             result_motion[0] = pop_elem_in_result(result_motion[0])
-        if self.with_occ_head:
-            result[0]['occ'] = pop_elem_in_result(result[0]['occ'],  \
-                pop_list=['seg_out_mask', 'flow_out', 'future_states_occ', 'pred_ins_masks', 'pred_raw_occ', 'pred_ins_logits', 'pred_ins_sigmoid'])
         
         for i, res in enumerate(result):
             res['token'] = img_metas[i]['sample_idx']
             res.update(result_track[i])
             if self.with_motion_head:
                 res.update(result_motion[i])
-            if self.with_seg_head:
-                res.update(result_seg[i])
 
         return result
 
@@ -368,48 +247,24 @@ def pop_elem_in_result(task_result:dict, pop_list:list=None):
 class UniADTRT(UniADTrackTRT):
     def __init__(
         self,
-        seg_head=None,
         motion_head=None,
-        occ_head=None,
-        planning_head=None,
         task_loss_weight=dict(
             track=1.0,
-            map=1.0,
             motion=1.0,
-            occ=1.0,
-            planning=1.0
         ),
         **kwargs,
     ):
         super(UniADTRT, self).__init__(**kwargs)
-        if seg_head:
-            self.seg_head = build_head(seg_head)
-        if occ_head:
-            self.occ_head = build_head(occ_head)
         if motion_head:
             self.motion_head = build_head(motion_head)
-        if planning_head:
-            self.planning_head = build_head(planning_head)
 
         self.task_loss_weight = task_loss_weight
         assert set(task_loss_weight.keys()) == \
-               {'track', 'occ', 'motion', 'map', 'planning'}
-
-    @property
-    def with_planning_head(self):
-        return hasattr(self, 'planning_head') and self.planning_head is not None
-
-    @property
-    def with_occ_head(self):
-        return hasattr(self, 'occ_head') and self.occ_head is not None
+               {'track', 'motion'}
 
     @property
     def with_motion_head(self):
         return hasattr(self, 'motion_head') and self.motion_head is not None
-
-    @property
-    def with_seg_head(self):
-        return hasattr(self, 'seg_head') and self.seg_head is not None
 
     def forward_uniad_trt(self,
                     prev_track_intances0,
@@ -431,10 +286,6 @@ class UniADTRT(UniADTrackTRT):
                     prev_l2g_t,
 
                     prev_bev,
-                    gt_lane_labels,
-                    gt_lane_masks,
-                    gt_segmentation,
-                    img_metas_scene_token,#
                     timestamp,
                     l2g_r_mat,
                     l2g_t,
@@ -442,7 +293,6 @@ class UniADTRT(UniADTrackTRT):
                     img_metas_can_bus=None,
                     img_metas_lidar2img=None,
                     image_shape=None,
-                    command=None,
                     use_prev_bev=1.0,
                     max_obj_id=0,
                     **kwargs):
@@ -508,7 +358,6 @@ class UniADTRT(UniADTrackTRT):
             prev_l2g_t,
             img_metas_can_bus,
             img_metas_lidar2img,
-            # img_metas_scene_token,#
             scene_token_changed,
             timestamp,
             l2g_r_mat,
@@ -520,50 +369,8 @@ class UniADTRT(UniADTrackTRT):
             use_prev_bev,
             )
 
-        (
-        bbox_pred,
-        seg_pred,
-        labels_pred,
-        drivable_pred,
-        score_pred,
-        lane_pred,
-        lane_score_pred,
-        stuff_score_pred,
-        drivable_intersection,
-        drivable_union,
-        lanes_intersection,
-        lanes_union,
-        divider_intersection,
-        divider_union,
-        crossing_intersection,
-        crossing_union,
-        contour_intersection,
-        contour_union,
-        drivable_iou,
-        lanes_iou,
-        divider_iou,
-        crossing_iou,
-        contour_iou,
-        memory,
-        memory_mask,
-        memory_pos,
-        lane_query,
-        lane_query_pos,
-        hw_lvl0,
-        reference,
-        results,
-        ori_shape
-        ) =  self.seg_head.forward_test_trt(
-                                bev_embed,
-                                gt_lane_labels,
-                                gt_lane_masks)
-
         bev_embed = bev_embed.float().detach()
         bev_pos = bev_pos.float().detach()
-        lane_query = lane_query.float().detach()
-        lane_query_pos = lane_query_pos.float().detach()
-        gt_segmentation = gt_segmentation.detach()
-        command = command.detach()
         track_query_embeddings = track_query_embeddings.float().detach()
         track_bbox_results1 = track_bbox_results1.float().detach()
         track_bbox_results2 = track_bbox_results2.long().detach()
@@ -595,251 +402,7 @@ class UniADTRT(UniADTrackTRT):
                 sdc_boxes_3d_gravity_center,
                 sdc_boxes_3d_yaw,
                 sdc_track_bbox_results1,
-                sdc_track_bbox_results2,
-                lane_query,
-                lane_query_pos)
-        seg_gt, seg_out =\
-            self.occ_head.forward_test_trt(
-            bev_embed,
-            out_track_query,
-            track_query_pos,
-            inter_states,
-            gt_segmentation=gt_segmentation,
-            track_scores = track_scores,
-        )
-        outs_planning = self.planning_head.forward_test_trt(
-        bev_embed, sdc_traj_query, sdc_track_query,
-                        bev_pos, seg_out, [command.long()])
-        (
-            prev_track_intances0_out,
-            prev_track_intances1_out,
-            prev_track_intances2_out,
-            prev_track_intances3_out,
-            prev_track_intances4_out,
-            prev_track_intances5_out,
-            prev_track_intances6_out,
-            prev_track_intances7_out,
-            prev_track_intances8_out,
-            prev_track_intances9_out,
-            prev_track_intances10_out,
-            prev_track_intances11_out,
-            prev_track_intances12_out,
-            prev_track_intances13_out,
-        )  = prev_track_instances_out
-
-        return (prev_track_intances0_out,
-                prev_track_intances1_out,
-                # prev_track_intances2_out,
-                prev_track_intances3_out,
-                prev_track_intances4_out,
-                prev_track_intances5_out,
-                prev_track_intances6_out,
-                # prev_track_intances7_out,
-                prev_track_intances8_out,
-                prev_track_intances9_out,
-                # prev_track_intances10_out,
-                prev_track_intances11_out,
-                prev_track_intances12_out,
-                prev_track_intances13_out,
-                prev_timestamp_out,
-                prev_l2g_t_out,
-                prev_l2g_r_mat_out,
-                bev_embed,
-                bboxes_dict_bboxes,
-                scores,
-                labels.int(),
-                bbox_index.int(),
-                obj_idxes.int(),
-                max_obj_id_out.int(),seg_out,
-                outs_planning)
-
-    def forward_uniad_trt_perception_prediction(self,
-                    prev_track_intances0,
-                    prev_track_intances1,
-                    prev_track_intances2,
-                    prev_track_intances3,
-                    prev_track_intances4,
-                    prev_track_intances5,
-                    prev_track_intances6,
-                    prev_track_intances7,
-                    prev_track_intances8,
-                    prev_track_intances9,
-                    prev_track_intances10,
-                    prev_track_intances11,
-                    prev_track_intances12,
-                    prev_track_intances13,
-                    prev_timestamp,
-                    prev_l2g_r_mat,
-                    prev_l2g_t,
-
-                    prev_bev,
-                    gt_lane_labels,
-                    gt_lane_masks,
-                    gt_segmentation,
-                    img_metas_scene_token,#
-                    timestamp,
-                    l2g_r_mat,
-                    l2g_t,
-                    img=None,
-                    img_metas_can_bus=None,
-                    img_metas_lidar2img=None,
-                    image_shape=None,
-                    command=None,
-                    use_prev_bev=1.0,
-                    max_obj_id=0,
-                    **kwargs):
-        scene_token_changed = 1-use_prev_bev
-        prev_track_intances = [
-            prev_track_intances0,
-            prev_track_intances1,
-            prev_track_intances2,
-            prev_track_intances3,
-            prev_track_intances4,
-            prev_track_intances5,
-            prev_track_intances6,
-            prev_track_intances7,
-            prev_track_intances8,
-            prev_track_intances9,
-            prev_track_intances10,
-            prev_track_intances11,
-            prev_track_intances12,
-            prev_track_intances13,
-        ]
-        (
-        prev_track_instances_out,
-        prev_timestamp_out,
-        prev_l2g_t_out,
-        prev_l2g_r_mat_out,
-        bev_embed,
-        bev_pos,
-        output_classes,
-        output_coords,
-        all_past_traj_preds,
-        last_ref_pts,
-        query_feats,
-
-        track_query_embeddings,
-        track_query_matched_idxes,
-        bboxes_dict_bboxes,
-        bboxes_gravity_center,
-        bboxes_yaw,
-        scores,
-        labels,
-        track_scores,
-        bbox_index,
-        obj_idxes,
-        mask,
-        track_bbox_results1,
-        track_bbox_results2,
-
-        sdc_bboxes_dict_bboxes,
-        sdc_boxes_3d_gravity_center,
-        sdc_boxes_3d_yaw,
-        sdc_scores_3d,
-        sdc_track_scores,
-        sdc_track_bbox_results1,
-        sdc_track_bbox_results2,
-        sdc_embedding,
-        max_obj_id_out,
-
-        track_instances_fordet,
-        )=self.simple_test_track_trt(
-            prev_track_intances,
-            prev_timestamp,
-            prev_l2g_r_mat,
-            prev_l2g_t,
-            img_metas_can_bus,
-            img_metas_lidar2img,
-            # img_metas_scene_token,#
-            scene_token_changed,
-            timestamp,
-            l2g_r_mat,
-            l2g_t,
-            image_shape,
-            prev_bev,
-            max_obj_id,
-            img,
-            use_prev_bev,
-            )
-
-        (
-        bbox_pred,
-        seg_pred,
-        labels_pred,
-        drivable_pred,
-        score_pred,
-        lane_pred,
-        lane_score_pred,
-        stuff_score_pred,
-        drivable_intersection,
-        drivable_union,
-        lanes_intersection,
-        lanes_union,
-        divider_intersection,
-        divider_union,
-        crossing_intersection,
-        crossing_union,
-        contour_intersection,
-        contour_union,
-        drivable_iou,
-        lanes_iou,
-        divider_iou,
-        crossing_iou,
-        contour_iou,
-        memory,
-        memory_mask,
-        memory_pos,
-        lane_query,
-        lane_query_pos,
-        hw_lvl0,
-        reference,
-        results,
-        ori_shape
-        ) =  self.seg_head.forward_test_trt(
-                                bev_embed,
-                                gt_lane_labels,
-                                gt_lane_masks)
-
-        bev_embed = bev_embed.float().detach()
-        bev_pos = bev_pos.float().detach()
-        lane_query = lane_query.float().detach()
-        lane_query_pos = lane_query_pos.float().detach()
-        gt_segmentation = gt_segmentation.detach()
-        command = command.detach()
-        track_query_embeddings = track_query_embeddings.float().detach()
-        track_bbox_results1 = track_bbox_results1.float().detach()
-        track_bbox_results2 = track_bbox_results2.long().detach()
-        bboxes_gravity_center = bboxes_gravity_center.float().detach()
-        bboxes_yaw = bboxes_yaw.float().detach()
-        sdc_embedding = sdc_embedding.float().detach()
-        sdc_boxes_3d_gravity_center =  sdc_boxes_3d_gravity_center.float().detach()
-        sdc_boxes_3d_yaw = sdc_boxes_3d_yaw.float().detach()
-        sdc_track_bbox_results1 = sdc_track_bbox_results1.float().detach()
-        sdc_track_bbox_results2 = sdc_track_bbox_results2.long().detach()
-        outputs_traj_scores,\
-        outputs_trajs,\
-        valid_traj_masks,\
-        inter_states,\
-        out_track_query,\
-        track_query_pos,\
-        sdc_traj_query,\
-        sdc_track_query,\
-        sdc_track_query_pos, \
-        track_scores = \
-            self.motion_head.forward_test_trt(
-                bev_embed,
-                track_query_embeddings,
-                track_bbox_results1,
-                track_bbox_results2,
-                bboxes_gravity_center,
-                bboxes_yaw,
-                sdc_embedding,
-                sdc_boxes_3d_gravity_center,
-                sdc_boxes_3d_yaw,
-                sdc_track_bbox_results1,
-                sdc_track_bbox_results2,
-                lane_query,
-                lane_query_pos)
+                sdc_track_bbox_results2)
         (
             prev_track_intances0_out,
             prev_track_intances1_out,

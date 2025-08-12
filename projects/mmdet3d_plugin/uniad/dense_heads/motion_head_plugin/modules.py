@@ -56,16 +56,14 @@ class MotionTransformerDecoder(BaseModule):
             nn.Linear(self.embed_dims*2, self.embed_dims),
         )
         self.out_query_fuser = nn.Sequential(
-            nn.Linear(self.embed_dims*4, self.embed_dims*2),
+            nn.Linear(self.embed_dims*3, self.embed_dims*2),
             nn.ReLU(),
             nn.Linear(self.embed_dims*2, self.embed_dims),
         )
 
     def forward(self,
                 track_query,
-                lane_query,
                 track_query_pos=None,
-                lane_query_pos=None,
                 track_bbox_results=None,
                 bev_embed=None,
                 reference_trajs=None,
@@ -121,10 +119,6 @@ class MotionTransformerDecoder(BaseModule):
             track_query_embed = self.track_agent_interaction_layers[lid](
                 query_embed, track_query, query_pos=track_query_pos_bc, key_pos=track_query_pos)
             
-            # interaction between agents and map
-            map_query_embed = self.map_interaction_layers[lid](
-                query_embed, lane_query, query_pos=track_query_pos_bc, key_pos=lane_query_pos)
-            
             # interaction between agents and bev, ie. interaction between agents and goals
             # implemented with deformable transformer
             bev_query_embed = self.bev_interaction_layers[lid](
@@ -136,7 +130,7 @@ class MotionTransformerDecoder(BaseModule):
                 **kwargs)
             
             # fusing the embeddings from different interaction layers
-            query_embed = [track_query_embed, map_query_embed, bev_query_embed, track_query_bc+track_query_pos_bc]
+            query_embed = [track_query_embed, bev_query_embed, track_query_bc+track_query_pos_bc]
             query_embed = torch.cat(query_embed, dim=-1)
             query_embed = self.out_query_fuser(query_embed)
 
@@ -188,9 +182,7 @@ class MotionTransformerDecoderTRT(MotionTransformerDecoder):
 
     def forward_trt(self,
                 track_query,
-                lane_query,
                 track_query_pos=None,
-                lane_query_pos=None,
                 track_bbox_results=None,
                 bev_embed=None,
                 reference_trajs=None,
@@ -246,10 +238,6 @@ class MotionTransformerDecoderTRT(MotionTransformerDecoder):
             track_query_embed = self.track_agent_interaction_layers[lid](
                 query_embed, track_query, query_pos=track_query_pos_bc, key_pos=track_query_pos)
 
-            # interaction between agents and map
-            map_query_embed = self.map_interaction_layers[lid](
-                query_embed, lane_query, query_pos=track_query_pos_bc, key_pos=lane_query_pos)
-
             # interaction between agents and bev, ie. interaction between agents and goals
             # implemented with deformable transformer
             bev_query_embed = self.bev_interaction_layers[lid].forward_trt(
@@ -261,7 +249,7 @@ class MotionTransformerDecoderTRT(MotionTransformerDecoder):
                 **kwargs)
 
             # fusing the embeddings from different interaction layers
-            query_embed = [track_query_embed, map_query_embed, bev_query_embed, track_query_bc+track_query_pos_bc]
+            query_embed = [track_query_embed, bev_query_embed, track_query_bc+track_query_pos_bc]
             query_embed = torch.cat(query_embed, dim=-1)
             query_embed = self.out_query_fuser(query_embed)
 
@@ -351,9 +339,7 @@ class MotionTransformerDecoderTRTP(MotionTransformerDecoderTRT):
 
     def forward_trt(self,
                 track_query,
-                lane_query,
                 track_query_pos=None,
-                lane_query_pos=None,
                 track_boxes_1=None,
                 track_boxes_2=None,
                 gravity_center=None,
@@ -412,10 +398,6 @@ class MotionTransformerDecoderTRTP(MotionTransformerDecoderTRT):
             track_query_embed = self.track_agent_interaction_layers[lid](
                 query_embed, track_query, query_pos=track_query_pos_bc, key_pos=track_query_pos)
 
-            # interaction between agents and map
-            map_query_embed = self.map_interaction_layers[lid](
-                query_embed, lane_query, query_pos=track_query_pos_bc, key_pos=lane_query_pos)
-
             # interaction between agents and bev, ie. interaction between agents and goals
             # implemented with deformable transformer
             bev_query_embed = self.bev_interaction_layers[lid].forward_trt(
@@ -429,7 +411,7 @@ class MotionTransformerDecoderTRTP(MotionTransformerDecoderTRT):
                 reference_trajs=reference_trajs_input,
                 **kwargs)
 
-            query_embed = [track_query_embed, map_query_embed, bev_query_embed, track_query_bc+track_query_pos_bc]
+            query_embed = [track_query_embed, bev_query_embed, track_query_bc+track_query_pos_bc]
             query_embed = torch.cat(query_embed, dim=-1)
             query_embed = self.out_query_fuser(query_embed)
             if traj_reg_branches is not None:
