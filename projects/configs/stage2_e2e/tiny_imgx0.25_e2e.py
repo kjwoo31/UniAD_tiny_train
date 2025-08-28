@@ -80,6 +80,7 @@ use_nonlinear_optimizer = True
 
 # Other settings
 train_gt_iou_threshold=0.3
+num_cams = 4
 
 model = dict(
     type="UniAD",
@@ -160,6 +161,7 @@ model = dict(
         fut_steps=fut_steps,
         transformer=dict(
             type="PerceptionTransformer",
+            num_cams=num_cams,
             rotate_prev_bev=True,
             use_shift=True,
             use_can_bus=True,
@@ -178,6 +180,7 @@ model = dict(
                         ),
                         dict(
                             type="SpatialCrossAttention",
+                            num_cams=num_cams,
                             pc_range=point_cloud_range,
                             deformable_attention=dict(
                                 type="MSDeformableAttention3D",
@@ -317,7 +320,7 @@ model = dict(
     ),
 )
 dataset_type = "NuScenesE2EDataset"
-data_root = "data/nuscenes/"
+data_root = "data/250814_nuscenes_sample/"
 info_root = "data/infos/"
 file_client_args = dict(backend="disk")
 ann_file_train=info_root + f"nuscenes_infos_temporal_train.pkl"
